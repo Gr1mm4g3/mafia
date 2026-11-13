@@ -1386,3 +1386,632 @@ export async function buyBulletsAction(packs: number): Promise<ActionResponse> {
   });
 }
 
+/**
+ * STAGE 5: UNDERGROUND CASINO (ROULETTE, DICE, BLACKJACK)
+ */
+const RED_NUMBERS = new Set([
+  1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36,
+]);
+
+export type RouletteBetType =
+  | "red"
+  | "black"
+  | "even"
+  | "odd"
+  | "dozen-1"
+  | "dozen-2"
+  | "dozen-3"
+  | "number";
+
+export async function playRouletteAction(
+  betType: RouletteBetType,
+  chosenNumber: number,
+  wager: number
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanWager = Math.floor(Number(wager));
+  if (!Number.isFinite(cleanWager) || cleanWager < 10) {
+    return makeResponse(false, "warning", "Minimum Wager", "Minimum roulette wager is $10.");
+  }
+
+  const cleanNum = Math.max(0, Math.min(36, Math.floor(Number(chosenNumber) || 0)));
+  const nowMs = Date.now();
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (nowMs < user.jailUntil.getTime()) {
+      return makeResponse(
+        false,
+        "danger",
+        "Locked Up",
+        "No roulette tables inside a precinct cell!"
+      );
+    }
+
+    if (user.cash < cleanWager) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Pocket Cash",
+        `You only have $${user.cash.toLocaleString()} in your pocket.`
+      );
+    }
+
+    const landed = Math.floor(Math.random() * 37); // 0..36
+    const landedColor =
+      landed === 0 ? "GREEN" : RED_NUMBERS.has(landed) ? "RED" : "BLACK";
+
+    let multiplier = 0;
+    if (betType === "red" && landedColor === "RED") multiplier = 2;
+    else if (betType === "black" && landedColor === "BLACK") multiplier = 2;
+    else if (betType === "even" && landed !== 0 && landed % 2 === 0) multiplier = 2;
+    else if (betType === "odd" && landed % 2 === 1) multiplier = 2;
+    else if (betType === "dozen-1" && landed >= 1 && landed <= 12) multiplier = 3;
+    else if (betType === "dozen-2" && landed >= 13 && landed <= 24) multiplier = 3;
+    else if (betType === "dozen-3" && landed >= 25 && landed <= 36) multiplier = 3;
+    else if (betType === "number" && landed === cleanNum) multiplier = 36;
+
+    const grossPayout = cleanWager * multiplier;
+    const netDelta = grossPayout - cleanWager;
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { increment: netDelta },
+      },
+    });
+
+    if (netDelta >= 1500) {
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "CASINO",
+          headline: `${user.username} Hit Big on the ${user.city} Roulette Wheel!`,
+          details: `Wheel landed on ${landed} (${landedColor}) — paid out $${grossPayout.toLocaleString()} (net +$${netDelta.toLocaleString()}).`,
+          city: user.city,
+        },
+      });
+    }
+
+    revalidatePath("/");
+
+    if (multiplier > 0) {
+      return makeResponse(
+        true,
+        "success",
+        `Wheel Landed on ${landed} (${landedColor}) — YOU WON $${grossPayout.toLocaleString()}!`,
+        `Your $${cleanWager.toLocaleString()} wager hit (${multiplier}x payout, net profit +$${netDelta.toLocaleString()}).`
+      );
+    } else {
+      return makeResponse(
+        false,
+        "warning",
+        `Wheel Landed on ${landed} (${landedColor}) — House Takes $${cleanWager.toLocaleString()}`,
+        `The croupier raked in your $${cleanWager.toLocaleString()} chips.`
+      );
+    }
+  });
+}
+
+export async function playDiceAction(
+  betChoice: "under7" | "seven" | "over7",
+  wager: number
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanWager = Math.floor(Number(wager));
+  if (!Number.isFinite(cleanWager) || cleanWager < 10) {
+    return makeResponse(false, "warning", "Minimum Wager", "Minimum dice wager is $10.");
+  }
+
+  const nowMs = Date.now();
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (nowMs < user.jailUntil.getTime()) {
+      return makeResponse(false, "danger", "Behind Bars", "Wait until you are out of jail.");
+    }
+
+    if (user.cash < cleanWager) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Pocket Cash",
+        `You only carry $${user.cash.toLocaleString()}.`
+      );
+    }
+
+    const d1 = Math.floor(Math.random() * 6) + 1;
+    const d2 = Math.floor(Math.random() * 6) + 1;
+    const total = d1 + d2;
+
+    let multiplier = 0;
+    if (betChoice === "under7" && total < 7) multiplier = 2.1;
+    else if (betChoice === "seven" && total === 7) multiplier = 5.2;
+    else if (betChoice === "over7" && total > 7) multiplier = 2.1;
+
+    const grossPayout = Math.round(cleanWager * multiplier);
+    const netDelta = grossPayout - cleanWager;
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: { cash: { increment: netDelta } },
+    });
+
+    if (netDelta >= 1500) {
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "CASINO",
+          headline: `${user.username} Rolled Hot Ivories (${d1} + ${d2} = ${total}) in ${user.city}`,
+          details: `Collected $${grossPayout.toLocaleString()} at the backroom craps table.`,
+          city: user.city,
+        },
+      });
+    }
+
+    revalidatePath("/");
+
+    if (multiplier > 0) {
+      return makeResponse(
+        true,
+        "success",
+        `Dice Rolled [${d1}] + [${d2}] = ${total} — WON $${grossPayout.toLocaleString()}!`,
+        `Net profit +$${netDelta.toLocaleString()} (${multiplier}x payout).`
+      );
+    }
+
+    return makeResponse(
+      false,
+      "warning",
+      `Dice Rolled [${d1}] + [${d2}] = ${total} — Lost $${cleanWager.toLocaleString()}`,
+      `Your call missed the roll.`
+    );
+  });
+}
+
+export async function playBlackjackAction(wager: number): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanWager = Math.floor(Number(wager));
+  if (!Number.isFinite(cleanWager) || cleanWager < 25) {
+    return makeResponse(
+      false,
+      "warning",
+      "Minimum Table Bet",
+      "High-Roller Blackjack minimum bet is $25."
+    );
+  }
+
+  const nowMs = Date.now();
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (nowMs < user.jailUntil.getTime()) {
+      return makeResponse(false, "danger", "Behind Bars", "Wait until you are released.");
+    }
+
+    if (user.cash < cleanWager) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Pocket Cash",
+        `You only carry $${user.cash.toLocaleString()}.`
+      );
+    }
+
+    const suits = ["♠", "♥", "♦", "♣"];
+    const ranks = [
+      { label: "A", val: 11 },
+      { label: "2", val: 2 },
+      { label: "3", val: 3 },
+      { label: "4", val: 4 },
+      { label: "5", val: 5 },
+      { label: "6", val: 6 },
+      { label: "7", val: 7 },
+      { label: "8", val: 8 },
+      { label: "9", val: 9 },
+      { label: "10", val: 10 },
+      { label: "J", val: 10 },
+      { label: "Q", val: 10 },
+      { label: "K", val: 10 },
+    ];
+
+    function drawCard() {
+      const r = ranks[Math.floor(Math.random() * ranks.length)];
+      const s = suits[Math.floor(Math.random() * suits.length)];
+      return { text: `${r.label}${s}`, val: r.val, isAce: r.label === "A" };
+    }
+
+    function scoreHand(cards: { text: string; val: number; isAce: boolean }[]) {
+      let sum = cards.reduce((a, c) => a + c.val, 0);
+      let aces = cards.filter((c) => c.isAce).length;
+      while (sum > 21 && aces > 0) {
+        sum -= 10;
+        aces--;
+      }
+      return sum;
+    }
+
+    const playerCards = [drawCard(), drawCard()];
+    const dealerCards = [drawCard(), drawCard()];
+
+    const playerNatural = scoreHand(playerCards) === 21;
+    const dealerNatural = scoreHand(dealerCards) === 21;
+
+    while (!playerNatural && !dealerNatural && scoreHand(playerCards) < 17) {
+      playerCards.push(drawCard());
+    }
+
+    const pTotal = scoreHand(playerCards);
+    if (pTotal <= 21 && !playerNatural) {
+      while (scoreHand(dealerCards) < 17) {
+        dealerCards.push(drawCard());
+      }
+    }
+    const dTotal = scoreHand(dealerCards);
+
+    const pHandStr = `${playerCards.map((c) => c.text).join(" ")} (${pTotal})`;
+    const dHandStr = `${dealerCards.map((c) => c.text).join(" ")} (${dTotal})`;
+
+    let multiplier = 0;
+    let outcomeLabel = "";
+
+    if (playerNatural && !dealerNatural) {
+      multiplier = 2.5;
+      outcomeLabel = "NATURAL BLACKJACK (2.5x)!";
+    } else if (pTotal > 21) {
+      multiplier = 0;
+      outcomeLabel = "Player Busted Over 21";
+    } else if (dTotal > 21) {
+      multiplier = 2;
+      outcomeLabel = "Dealer Busted — You Win!";
+    } else if (pTotal > dTotal) {
+      multiplier = 2;
+      outcomeLabel = "Player Beats Dealer!";
+    } else if (pTotal === dTotal) {
+      multiplier = 1;
+      outcomeLabel = "Push (Tie Hand)";
+    } else {
+      multiplier = 0;
+      outcomeLabel = "Dealer Wins";
+    }
+
+    const grossPayout = Math.round(cleanWager * multiplier);
+    const netDelta = grossPayout - cleanWager;
+
+    if (netDelta !== 0) {
+      await tx.user.update({
+        where: { id: user.id },
+        data: { cash: { increment: netDelta } },
+      });
+    }
+
+    if (netDelta >= 1500) {
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "CASINO",
+          headline: `${user.username} Cleaned Out the Blackjack Shoe in ${user.city}`,
+          details: `Dealt ${pHandStr} against Dealer's ${dHandStr} for a +$${netDelta.toLocaleString()} profit.`,
+          city: user.city,
+        },
+      });
+    }
+
+    revalidatePath("/");
+
+    return makeResponse(
+      netDelta >= 0,
+      netDelta > 0 ? "success" : netDelta === 0 ? "warning" : "danger",
+      `${outcomeLabel} — You: ${pHandStr} vs Dealer: ${dHandStr}`,
+      netDelta > 0
+        ? `Collected $${grossPayout.toLocaleString()} (net profit +$${netDelta.toLocaleString()}).`
+        : netDelta === 0
+          ? `Your $${cleanWager.toLocaleString()} wager was returned.`
+          : `Lost $${cleanWager.toLocaleString()} to the house shoe.`
+    );
+  });
+}
+
+/**
+ * STAGE 5: MAFIA FAMILIES (CREATE, JOIN, LEAVE, CONTRIBUTE TREASURY)
+ */
+export async function createFamilyAction(
+  name: string,
+  tag: string,
+  motto: string
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanName = String(name || "").trim();
+  const cleanTag = String(tag || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  const cleanMotto =
+    String(motto || "").trim() || "Blood, honor, and silence.";
+
+  if (cleanName.length < 3 || cleanName.length > 28) {
+    return makeResponse(
+      false,
+      "warning",
+      "Invalid Family Name",
+      "Family name must be between 3 and 28 characters."
+    );
+  }
+
+  if (cleanTag.length < 2 || cleanTag.length > 5) {
+    return makeResponse(
+      false,
+      "warning",
+      "Invalid Tag",
+      "Family tag must be 2 to 5 alphanumeric characters (e.g. CORL)."
+    );
+  }
+
+  const charterCost = 2500;
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (user.familyId) {
+      return makeResponse(
+        false,
+        "warning",
+        "Already in a Family",
+        "Leave your current Family before founding a new syndicate."
+      );
+    }
+
+    if (user.cash < charterCost) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Charter Capital",
+        `Founding a Commission-recognized Family requires $${charterCost.toLocaleString()} pocket cash.`
+      );
+    }
+
+    const dup = await tx.family.findFirst({
+      where: {
+        OR: [{ name: cleanName }, { tag: cleanTag }],
+      },
+    });
+
+    if (dup) {
+      return makeResponse(
+        false,
+        "danger",
+        "Name or Tag Taken",
+        "Another Syndicate already operates under that name or tag."
+      );
+    }
+
+    const family = await tx.family.create({
+      data: {
+        name: cleanName,
+        tag: cleanTag,
+        motto: cleanMotto,
+        homeCity: user.city,
+        treasuryCash: 1000, // $1,000 of the charter goes straight into the family vault
+        founderName: user.username,
+      },
+    });
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: charterCost },
+        familyId: family.id,
+        familyRole: "Don",
+        familyContribution: 1000,
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        userId: user.id,
+        actorName: user.username,
+        category: "FAMILY",
+        headline: `Don ${user.username} Founded [${family.tag}] ${family.name} in ${user.city}!`,
+        details: `"${family.motto}" — The Commission has recognized a new seat at the table.`,
+        city: user.city,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Founded [${family.tag}] ${family.name}!`,
+      `You are now the Don of ${family.name} ($1,000 seeded into the Family Treasury).`
+    );
+  });
+}
+
+export async function joinFamilyAction(familyId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const family = await tx.family.findUnique({ where: { id: familyId } });
+
+    if (!user || !family) {
+      return makeResponse(false, "danger", "Not Found", "Family not found.");
+    }
+
+    if (user.familyId) {
+      return makeResponse(
+        false,
+        "warning",
+        "Already Affiliated",
+        "Step down from your current Family before swearing allegiance to another."
+      );
+    }
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        familyId: family.id,
+        familyRole: "Soldier",
+        familyContribution: 0,
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        userId: user.id,
+        actorName: user.username,
+        category: "FAMILY",
+        headline: `${user.username} Swore Allegiance to [${family.tag}] ${family.name}`,
+        details: `Inducted as a Soldier in the ${family.homeCity} syndicate.`,
+        city: user.city,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Joined [${family.tag}] ${family.name}`,
+      `You are now a Soldier in ${family.name}. Contribute to the Family Treasury to rise through the family ranks!`
+    );
+  });
+}
+
+export async function leaveFamilyAction(): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { family: true },
+    });
+
+    if (!user || !user.family) {
+      return makeResponse(false, "warning", "No Family", "You are not part of a Family.");
+    }
+
+    const oldName = user.family.name;
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        familyId: null,
+        familyRole: "Soldier",
+        familyContribution: 0,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "warning",
+      `Left ${oldName}`,
+      "You are now operating as an independent earner."
+    );
+  });
+}
+
+export async function contributeFamilyTreasuryAction(amount: number): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanAmount = Math.floor(Number(amount));
+  if (!Number.isFinite(cleanAmount) || cleanAmount < 50) {
+    return makeResponse(false, "warning", "Minimum Tribute", "Minimum tribute is $50.");
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { family: true },
+    });
+
+    if (!user || !user.family) {
+      return makeResponse(
+        false,
+        "warning",
+        "No Family",
+        "Join or create a Family before contributing to a Treasury."
+      );
+    }
+
+    if (user.cash < cleanAmount) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Pocket Cash",
+        `You only have $${user.cash.toLocaleString()} on hand.`
+      );
+    }
+
+    const newContribution = user.familyContribution + cleanAmount;
+    let newRole = user.familyRole;
+    if (user.familyRole !== "Don") {
+      if (newContribution >= 25000) newRole = "Underboss";
+      else if (newContribution >= 10000) newRole = "Consigliere";
+      else if (newContribution >= 2500) newRole = "Caporegime";
+      else newRole = "Soldier";
+    }
+
+    const xpBonus = Number((cleanAmount / 250).toFixed(1));
+
+    await tx.family.update({
+      where: { id: user.family.id },
+      data: {
+        treasuryCash: { increment: cleanAmount },
+      },
+    });
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: cleanAmount },
+        familyContribution: newContribution,
+        familyRole: newRole,
+        rankPoints: Number((user.rankPoints + xpBonus).toFixed(2)),
+      },
+    });
+
+    if (cleanAmount >= 1000) {
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "FAMILY",
+          headline: `${user.username} Paid $${cleanAmount.toLocaleString()} Tribute to [${user.family.tag}] ${user.family.name}`,
+          details: `Family Treasury strengthened (${user.username} standing: ${newRole}).`,
+          city: user.city,
+        },
+      });
+    }
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Contributed $${cleanAmount.toLocaleString()} to [${user.family.tag}]`,
+      `Family Treasury increased by $${cleanAmount.toLocaleString()}${xpBonus > 0 ? ` (+${xpBonus} Rank XP)` : ""}. Your Family role: ${newRole}.`
+    );
+  });
+}
+
+

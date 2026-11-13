@@ -3,7 +3,9 @@ import { connection } from "next/server";
 import AuthScreen from "@/app/components/AuthScreen";
 import GameDashboard, {
   SerializedCrime,
+  SerializedFamily,
   SerializedInmate,
+  SerializedLeaderboardPlayer,
   SerializedLog,
   SerializedMarketRow,
   SerializedUser,
@@ -20,7 +22,7 @@ async function GameServerContent() {
   }
 
   const now = new Date();
-  const [crimes, inmatesRaw, marketsRaw, logsRaw] = await Promise.all([
+  const [crimes, inmatesRaw, marketsRaw, logsRaw, familiesRaw, allPlayersRaw] = await Promise.all([
     prisma.crimeConfig.findMany({
       orderBy: { tier: "asc" },
     }),
@@ -36,6 +38,21 @@ async function GameServerContent() {
     }),
     prisma.activityLog.findMany({
       orderBy: { createdAt: "desc" },
+      take: 35,
+    }),
+    prisma.family.findMany({
+      include: {
+        members: {
+          orderBy: { rankPoints: "desc" },
+        },
+      },
+      orderBy: { treasuryCash: "desc" },
+    }),
+    prisma.user.findMany({
+      include: {
+        family: true,
+      },
+      orderBy: { rankPoints: "desc" },
       take: 30,
     }),
   ]);
@@ -57,6 +74,11 @@ async function GameServerContent() {
     crimesCommitted: user.crimesCommitted,
     carsStolen: user.carsStolen,
     bustsSucceeded: user.bustsSucceeded,
+    familyId: user.familyId,
+    familyTag: user.family?.tag ?? null,
+    familyName: user.family?.name ?? null,
+    familyRole: user.familyRole,
+    familyContribution: user.familyContribution,
     vehicles: user.vehicles.map((v) => ({
       id: v.id,
       name: v.name,
@@ -116,6 +138,47 @@ async function GameServerContent() {
     createdAtIso: l.createdAt.toISOString(),
   }));
 
+  const serializedFamilies: SerializedFamily[] = familiesRaw.map((fam) => {
+    const totalRankPoints = fam.members.reduce((acc, m) => acc + m.rankPoints, 0);
+    const totalMemberWealth = fam.members.reduce((acc, m) => acc + m.cash + m.bankCash, 0);
+    return {
+      id: fam.id,
+      name: fam.name,
+      tag: fam.tag,
+      motto: fam.motto,
+      homeCity: fam.homeCity,
+      treasuryCash: fam.treasuryCash,
+      founderName: fam.founderName,
+      memberCount: fam.members.length,
+      totalRankPoints,
+      totalMemberWealth,
+      combinedSyndicateWorth: fam.treasuryCash + totalMemberWealth,
+      members: fam.members.map((m) => ({
+        id: m.id,
+        username: m.username,
+        familyRole: m.familyRole,
+        rankPoints: m.rankPoints,
+        city: m.city,
+        familyContribution: m.familyContribution,
+      })),
+    };
+  });
+
+  const serializedLeaderboardPlayers: SerializedLeaderboardPlayer[] = allPlayersRaw.map((p) => ({
+    id: p.id,
+    username: p.username,
+    isNpc: p.isNpc,
+    familyTag: p.family?.tag ?? null,
+    familyName: p.family?.name ?? null,
+    familyRole: p.familyRole,
+    city: p.city,
+    rankPoints: p.rankPoints,
+    netWorth: p.cash + p.bankCash,
+    crimesCommitted: p.crimesCommitted,
+    carsStolen: p.carsStolen,
+    bustsSucceeded: p.bustsSucceeded,
+  }));
+
   return (
     <GameDashboard
       user={serializedUser}
@@ -123,6 +186,8 @@ async function GameServerContent() {
       inmates={serializedInmates}
       markets={serializedMarkets}
       logs={serializedLogs}
+      families={serializedFamilies}
+      leaderboardPlayers={serializedLeaderboardPlayers}
       serverNowMs={now.getTime()}
     />
   );

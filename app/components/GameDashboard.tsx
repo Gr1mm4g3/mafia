@@ -9,9 +9,17 @@ import {
   buyBulletsAction,
   commitCrimeAction,
   commitGtaAction,
+  contributeFamilyTreasuryAction,
+  createFamilyAction,
   healAtDoctorAction,
+  joinFamilyAction,
+  leaveFamilyAction,
   logoutAction,
+  playBlackjackAction,
+  playDiceAction,
+  playRouletteAction,
   repairVehicleAction,
+  RouletteBetType,
   sellVehicleAction,
   shipVehicleAction,
   tradeSmugglingItemAction,
@@ -42,6 +50,11 @@ export interface SerializedUser {
   crimesCommitted: number;
   carsStolen: number;
   bustsSucceeded: number;
+  familyId: string | null;
+  familyTag: string | null;
+  familyName: string | null;
+  familyRole: string;
+  familyContribution: number;
   vehicles: {
     id: string;
     name: string;
@@ -101,6 +114,43 @@ export interface SerializedLog {
   createdAtIso: string;
 }
 
+export interface SerializedFamily {
+  id: string;
+  name: string;
+  tag: string;
+  motto: string;
+  homeCity: string;
+  treasuryCash: number;
+  founderName: string;
+  memberCount: number;
+  totalRankPoints: number;
+  totalMemberWealth: number;
+  combinedSyndicateWorth: number;
+  members: {
+    id: string;
+    username: string;
+    familyRole: string;
+    rankPoints: number;
+    city: string;
+    familyContribution: number;
+  }[];
+}
+
+export interface SerializedLeaderboardPlayer {
+  id: string;
+  username: string;
+  isNpc: boolean;
+  familyTag: string | null;
+  familyName: string | null;
+  familyRole: string;
+  city: string;
+  rankPoints: number;
+  netWorth: number;
+  crimesCommitted: number;
+  carsStolen: number;
+  bustsSucceeded: number;
+}
+
 type NavTab =
   | "crimes"
   | "gta"
@@ -108,6 +158,9 @@ type NavTab =
   | "jail"
   | "smuggling"
   | "travel"
+  | "casino"
+  | "families"
+  | "leaderboards"
   | "bank"
   | "newspaper"
   | "ranks";
@@ -118,6 +171,8 @@ interface Props {
   inmates: SerializedInmate[];
   markets: SerializedMarketRow[];
   logs: SerializedLog[];
+  families: SerializedFamily[];
+  leaderboardPlayers: SerializedLeaderboardPlayer[];
   serverNowMs: number;
 }
 
@@ -134,13 +189,15 @@ export default function GameDashboard({
   inmates,
   markets,
   logs,
+  families,
+  leaderboardPlayers,
   serverNowMs,
 }: Props) {
   const [activeTab, setActiveTab] = useState<NavTab>("crimes");
   const [feedback, setFeedback] = useState<ActionResponse | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  // Anti-cheat test toggle so the player can test sending premature action requests to the server
+  // Anti-cheat test toggle
   const [bypassClientLock, setBypassClientLock] = useState(false);
 
   // Smuggling input quantities per item
@@ -149,6 +206,22 @@ export default function GameDashboard({
   const [bankAmount, setBankAmount] = useState<string>("250");
   // Garage ship destination per vehicle
   const [shipTargets, setShipTargets] = useState<Record<string, string>>({});
+
+  // Casino state
+  const [rouletteWager, setRouletteWager] = useState<string>("100");
+  const [rouletteBetType, setRouletteBetType] = useState<RouletteBetType>("red");
+  const [rouletteNumber, setRouletteNumber] = useState<string>("7");
+  const [diceWager, setDiceWager] = useState<string>("100");
+  const [blackjackWager, setBlackjackWager] = useState<string>("150");
+
+  // Family creation / contribution state
+  const [newFamName, setNewFamName] = useState("");
+  const [newFamTag, setNewFamTag] = useState("");
+  const [newFamMotto, setNewFamMotto] = useState("");
+  const [tributeAmount, setTributeAmount] = useState<string>("250");
+
+  // Leaderboard sort mode
+  const [playerSort, setPlayerSort] = useState<"xp" | "wealth" | "crimes">("xp");
 
   // Sync client clock with serverNowMs offset
   const [clockOffset] = useState(() => serverNowMs - Date.now());
@@ -181,6 +254,25 @@ export default function GameDashboard({
     .filter((i) => i.itemType === "narcotics")
     .reduce((acc, i) => acc + i.quantity, 0);
 
+  const currentUserFamily = families.find((f) => f.id === user.familyId) ?? null;
+
+  const sortedFamilies = [...families].sort(
+    (a, b) => b.combinedSyndicateWorth - a.combinedSyndicateWorth
+  );
+
+  const sortedPlayers = [...leaderboardPlayers].sort((a, b) => {
+    if (playerSort === "wealth") return b.netWorth - a.netWorth;
+    if (playerSort === "crimes") {
+      return (
+        b.crimesCommitted +
+        b.carsStolen +
+        b.bustsSucceeded -
+        (a.crimesCommitted + a.carsStolen + a.bustsSucceeded)
+      );
+    }
+    return b.rankPoints - a.rankPoints;
+  });
+
   function runAction(fn: () => Promise<ActionResponse>) {
     startTransition(async () => {
       const res = await fn();
@@ -200,6 +292,9 @@ export default function GameDashboard({
             </div>
             <div>
               <div className="flex items-center gap-2">
+                {user.familyTag && (
+                  <span className="text-xs font-bold text-amber-400">[{user.familyTag}]</span>
+                )}
                 <span className="text-sm font-bold text-zinc-100">{user.username}</span>
                 <span className="text-[11px] px-2 py-0.5 bg-zinc-800 border border-zinc-700 text-amber-400 font-semibold">
                   {rankInfo.current.name}
@@ -213,6 +308,17 @@ export default function GameDashboard({
                 <span>
                   XP: <strong className="text-zinc-200">{user.rankPoints.toFixed(1)}</strong>
                 </span>
+                {user.familyName && (
+                  <>
+                    <span>•</span>
+                    <span>
+                      Family:{" "}
+                      <strong className="text-amber-300">
+                        {user.familyName} ({user.familyRole})
+                      </strong>
+                    </span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -360,7 +466,7 @@ export default function GameDashboard({
                     key={item.id}
                     type="button"
                     onClick={() => setActiveTab(item.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 text-xs font-bold uppercase tracking-wider transition cursor-pointer border ${
+                    className={`w-full flex items-center justify-between px-3 py-2 text-xs font-bold uppercase tracking-wider transition cursor-pointer border ${
                       activeTab === item.id
                         ? "bg-amber-500/15 border-amber-500/60 text-amber-300"
                         : "bg-[#141414] border-zinc-800/80 text-zinc-300 hover:bg-zinc-800/60"
@@ -387,10 +493,25 @@ export default function GameDashboard({
 
             <div>
               <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 mb-2 px-2">
-                Syndicate Economy
+                Syndicate & Economy
               </div>
               <nav className="space-y-1">
                 {[
+                  {
+                    id: "casino" as NavTab,
+                    label: "Underground Casino",
+                    badge: "3 Games",
+                  },
+                  {
+                    id: "families" as NavTab,
+                    label: "Mafia Families",
+                    badge: user.familyTag ? `[${user.familyTag}]` : `${families.length}`,
+                  },
+                  {
+                    id: "leaderboards" as NavTab,
+                    label: "Leaderboards",
+                    badge: "TOP",
+                  },
                   {
                     id: "smuggling" as NavTab,
                     label: "Booze & Narcotics",
@@ -421,7 +542,7 @@ export default function GameDashboard({
                     key={item.id}
                     type="button"
                     onClick={() => setActiveTab(item.id)}
-                    className={`w-full flex items-center justify-between px-3 py-2.5 text-xs font-bold uppercase tracking-wider transition cursor-pointer border ${
+                    className={`w-full flex items-center justify-between px-3 py-2 text-xs font-bold uppercase tracking-wider transition cursor-pointer border ${
                       activeTab === item.id
                         ? "bg-amber-500/15 border-amber-500/60 text-amber-300"
                         : "bg-[#141414] border-zinc-800/80 text-zinc-300 hover:bg-zinc-800/60"
@@ -714,7 +835,8 @@ export default function GameDashboard({
                         <p className="text-xs text-zinc-400">{gta.subtitle}</p>
                         <div className="flex flex-wrap items-center gap-4 text-[11px] text-zinc-400 pt-1">
                           <span>
-                            Success Odds: <strong className="text-amber-300">{effectiveOdds}%</strong>
+                            Success Odds:{" "}
+                            <strong className="text-amber-300">{effectiveOdds}%</strong>
                           </span>
                           <span>
                             XP Reward:{" "}
@@ -1021,6 +1143,677 @@ export default function GameDashboard({
                   })}
                 </div>
               )}
+            </section>
+          )}
+
+          {/* VIEWPORT: UNDERGROUND CASINO (STAGE 5) */}
+          {activeTab === "casino" && (
+            <section className="space-y-4">
+              <div className="bg-[#1a1a1a] border border-zinc-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight text-zinc-100 uppercase">
+                    The Velvet Room — {user.city} Underground Casino
+                  </h2>
+                  <p className="text-xs text-zinc-400">
+                    High-stakes parlor tables backed by the Syndicate. All spins, dice rolls, and
+                    card shoes are settled atomically on the server.
+                  </p>
+                </div>
+                <div className="text-xs px-3 py-1.5 bg-[#121212] border border-zinc-800">
+                  Chips on Hand:{" "}
+                  <strong className="text-emerald-400">${user.cash.toLocaleString()}</strong>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* 1. European Roulette Wheel */}
+                <div className="bg-[#1a1a1a] border border-zinc-800 p-5 flex flex-col justify-between space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                      <h3 className="text-sm font-bold uppercase text-amber-400">
+                        European Roulette (0–36)
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 bg-zinc-800 text-zinc-300">
+                        Up to 36x
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400">
+                      Call Red/Black (2x), Odd/Even (2x), Dozens (3x), or a Single Number (36x).
+                    </p>
+
+                    <div className="pt-2 space-y-3">
+                      <div>
+                        <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                          Select Table Call
+                        </label>
+                        <div className="grid grid-cols-2 gap-1.5 text-xs">
+                          {[
+                            { id: "red" as RouletteBetType, label: "Red (2x)" },
+                            { id: "black" as RouletteBetType, label: "Black (2x)" },
+                            { id: "even" as RouletteBetType, label: "Even (2x)" },
+                            { id: "odd" as RouletteBetType, label: "Odd (2x)" },
+                            { id: "dozen-1" as RouletteBetType, label: "1st 12 (3x)" },
+                            { id: "dozen-2" as RouletteBetType, label: "2nd 12 (3x)" },
+                            { id: "dozen-3" as RouletteBetType, label: "3rd 12 (3x)" },
+                            { id: "number" as RouletteBetType, label: "Exact # (36x)" },
+                          ].map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setRouletteBetType(opt.id)}
+                              className={`py-1.5 px-2 font-bold uppercase border cursor-pointer ${
+                                rouletteBetType === opt.id
+                                  ? "bg-amber-500/20 border-amber-500 text-amber-300"
+                                  : "bg-[#121212] border-zinc-800 text-zinc-400 hover:text-zinc-200"
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {rouletteBetType === "number" && (
+                        <div>
+                          <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                            Straight-Up Number (0–36)
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={36}
+                            value={rouletteNumber}
+                            onChange={(e) => setRouletteNumber(e.target.value)}
+                            className="w-full bg-[#121212] border border-zinc-700 px-3 py-1.5 text-xs text-zinc-100 outline-none"
+                          />
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                          Wager Amount ($)
+                        </label>
+                        <input
+                          type="number"
+                          min={10}
+                          value={rouletteWager}
+                          onChange={(e) => setRouletteWager(e.target.value)}
+                          className="w-full bg-[#121212] border border-zinc-700 px-3 py-2 text-sm text-zinc-100 outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isPending || isInJail}
+                    onClick={() =>
+                      runAction(() =>
+                        playRouletteAction(
+                          rouletteBetType,
+                          Number(rouletteNumber),
+                          Number(rouletteWager)
+                        )
+                      )
+                    }
+                    className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 disabled:bg-zinc-900 disabled:text-zinc-600 text-black font-bold text-xs uppercase tracking-wider cursor-pointer"
+                  >
+                    Spin Roulette Wheel (${Number(rouletteWager || 0).toLocaleString()})
+                  </button>
+                </div>
+
+                {/* 2. Back-Alley 2d6 Craps / Seven Dice */}
+                <div className="bg-[#1a1a1a] border border-zinc-800 p-5 flex flex-col justify-between space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                      <h3 className="text-sm font-bold uppercase text-emerald-400">
+                        Back-Alley 2d6 Dice
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 bg-zinc-800 text-zinc-300">
+                        2.1x / 5.2x
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400">
+                      Roll two six-sided bones against the house wall. Call Under 7 (2–6), Lucky 7,
+                      or Over 7 (8–12).
+                    </p>
+
+                    <div className="pt-2 space-y-3">
+                      <div>
+                        <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                          Dice Wager ($)
+                        </label>
+                        <input
+                          type="number"
+                          min={10}
+                          value={diceWager}
+                          onChange={(e) => setDiceWager(e.target.value)}
+                          className="w-full bg-[#121212] border border-zinc-700 px-3 py-2 text-sm text-zinc-100 outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        disabled={isPending || isInJail}
+                        onClick={() =>
+                          runAction(() => playDiceAction("under7", Number(diceWager)))
+                        }
+                        className="py-2.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-100 font-bold text-xs uppercase cursor-pointer"
+                      >
+                        Under 7 (2.1x)
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isPending || isInJail}
+                        onClick={() => runAction(() => playDiceAction("seven", Number(diceWager)))}
+                        className="py-2.5 bg-emerald-500 hover:bg-emerald-400 text-black font-bold text-xs uppercase cursor-pointer"
+                      >
+                        Lucky 7 (5.2x)
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isPending || isInJail}
+                        onClick={() => runAction(() => playDiceAction("over7", Number(diceWager)))}
+                        className="py-2.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-100 font-bold text-xs uppercase cursor-pointer"
+                      >
+                        Over 7 (2.1x)
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. High-Roller Blackjack 21 */}
+                <div className="bg-[#1a1a1a] border border-zinc-800 p-5 flex flex-col justify-between space-y-4">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                      <h3 className="text-sm font-bold uppercase text-sky-400">
+                        High-Roller Blackjack 21
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 bg-zinc-800 text-zinc-300">
+                        2x / 2.5x Natural
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400">
+                      Face the House Dealer heads-up. Dealer stands on 17. Natural 21 pays 3:2
+                      (2.5x total return).
+                    </p>
+
+                    <div className="pt-2 space-y-3">
+                      <div>
+                        <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                          Table Bet (Min $25)
+                        </label>
+                        <input
+                          type="number"
+                          min={25}
+                          value={blackjackWager}
+                          onChange={(e) => setBlackjackWager(e.target.value)}
+                          className="w-full bg-[#121212] border border-zinc-700 px-3 py-2 text-sm text-zinc-100 outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isPending || isInJail}
+                    onClick={() => runAction(() => playBlackjackAction(Number(blackjackWager)))}
+                    className="w-full py-2.5 bg-sky-500 hover:bg-sky-400 disabled:bg-zinc-900 disabled:text-zinc-600 text-black font-bold text-xs uppercase tracking-wider cursor-pointer"
+                  >
+                    Deal Blackjack Hand (${Number(blackjackWager || 0).toLocaleString()})
+                  </button>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* VIEWPORT: MAFIA FAMILIES (STAGE 5) */}
+          {activeTab === "families" && (
+            <section className="space-y-5">
+              <div className="bg-[#1a1a1a] border border-zinc-800 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight text-zinc-100 uppercase">
+                    The Commission — Mafia Families & Syndicates
+                  </h2>
+                  <p className="text-xs text-zinc-400">
+                    Swear allegiance to an existing Family, contribute tribute to rise from Soldier
+                    to Underboss, or charter your own Syndicate as Don.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("leaderboards")}
+                  className="text-xs px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-amber-400 font-bold uppercase cursor-pointer"
+                >
+                  View Family Leaderboard →
+                </button>
+              </div>
+
+              {/* Current Player's Family HQ (if affiliated) */}
+              {currentUserFamily ? (
+                <div className="bg-[#1a1a1a] border-2 border-amber-500/60 p-5 space-y-5">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 bg-amber-500 text-black font-black text-xs">
+                          [{currentUserFamily.tag}]
+                        </span>
+                        <h3 className="text-lg font-bold text-zinc-100 uppercase">
+                          {currentUserFamily.name}
+                        </h3>
+                        <span className="text-xs px-2 py-0.5 bg-zinc-800 text-amber-300 font-semibold">
+                          Your Role: {user.familyRole}
+                        </span>
+                      </div>
+                      <p className="text-xs italic text-zinc-400 mt-1">
+                        &ldquo;{currentUserFamily.motto}&rdquo;
+                      </p>
+                      <div className="text-[11px] text-zinc-400 mt-1 flex flex-wrap gap-4">
+                        <span>
+                          Home Territory:{" "}
+                          <strong className="text-zinc-200">{currentUserFamily.homeCity}</strong>
+                        </span>
+                        <span>
+                          Founder:{" "}
+                          <strong className="text-zinc-200">
+                            {currentUserFamily.founderName}
+                          </strong>
+                        </span>
+                        <span>
+                          Members:{" "}
+                          <strong className="text-zinc-200">
+                            {currentUserFamily.memberCount}
+                          </strong>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="bg-[#121212] border border-zinc-800 px-4 py-2 text-right">
+                        <span className="text-[10px] uppercase text-zinc-500 block">
+                          Family Treasury
+                        </span>
+                        <span className="text-base font-bold text-amber-400">
+                          ${currentUserFamily.treasuryCash.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="bg-[#121212] border border-zinc-800 px-4 py-2 text-right">
+                        <span className="text-[10px] uppercase text-zinc-500 block">
+                          Your Lifetime Tribute
+                        </span>
+                        <span className="text-base font-bold text-emerald-400">
+                          ${user.familyContribution.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Contribute Tribute to Treasury */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center bg-[#121212] border border-zinc-800 p-4">
+                    <div>
+                      <div className="text-xs font-bold uppercase text-amber-400">
+                        Pay Tribute to Family Treasury
+                      </div>
+                      <p className="text-xs text-zinc-400 mt-0.5">
+                        Earn +1 Rank XP per $250 contributed and automatically earn promotion
+                        (Caporegime at $2.5k, Consigliere at $10k, Underboss at $25k).
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={50}
+                        value={tributeAmount}
+                        onChange={(e) => setTributeAmount(e.target.value)}
+                        className="flex-1 bg-[#1a1a1a] border border-zinc-700 px-3 py-2 text-sm text-zinc-100 outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={isPending}
+                        onClick={() =>
+                          runAction(() => contributeFamilyTreasuryAction(Number(tributeAmount)))
+                        }
+                        className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase cursor-pointer"
+                      >
+                        Donate (${Number(tributeAmount || 0).toLocaleString()})
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Family Member Roster */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase text-zinc-300">
+                        Made Members Roster ({currentUserFamily.members.length})
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isPending}
+                        onClick={() => runAction(() => leaveFamilyAction())}
+                        className="text-xs text-red-400 hover:text-red-300 uppercase cursor-pointer"
+                      >
+                        [Step Down & Leave Family]
+                      </button>
+                    </div>
+                    <div className="overflow-x-auto border border-zinc-800">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead>
+                          <tr className="bg-[#121212] border-b border-zinc-800 text-zinc-400">
+                            <th className="py-2 px-3">Mobster</th>
+                            <th className="py-2 px-3">Family Role</th>
+                            <th className="py-2 px-3">Standing</th>
+                            <th className="py-2 px-3">City</th>
+                            <th className="py-2 px-3">Tribute Paid</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {currentUserFamily.members.map((m) => (
+                            <tr key={m.id} className="border-b border-zinc-800/60">
+                              <td className="py-2 px-3 font-bold text-zinc-100">{m.username}</td>
+                              <td className="py-2 px-3 text-amber-400">{m.familyRole}</td>
+                              <td className="py-2 px-3 text-zinc-300">
+                                {getRankInfo(m.rankPoints).current.name} ({m.rankPoints.toFixed(0)}{" "}
+                                XP)
+                              </td>
+                              <td className="py-2 px-3 text-zinc-400">{m.city}</td>
+                              <td className="py-2 px-3 text-emerald-400">
+                                ${m.familyContribution.toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Charter a New Family Form (if unaffiliated) */
+                <div className="bg-[#1a1a1a] border border-zinc-800 p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-800 pb-3">
+                    <div>
+                      <h3 className="text-sm font-bold uppercase text-amber-400">
+                        Charter a New Mafia Family ($2,500 Fee)
+                      </h3>
+                      <p className="text-xs text-zinc-400">
+                        Establish your own Syndicate as Don in {user.city}. $1,000 of your charter
+                        fee goes directly into your new Family Treasury.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                        Family Name
+                      </label>
+                      <input
+                        type="text"
+                        value={newFamName}
+                        onChange={(e) => setNewFamName(e.target.value)}
+                        placeholder="e.g. Gambino Syndicate"
+                        className="w-full bg-[#121212] border border-zinc-700 px-3 py-2 text-xs text-zinc-100 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                        Syndicate Tag (2–5 chars)
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={5}
+                        value={newFamTag}
+                        onChange={(e) => setNewFamTag(e.target.value.toUpperCase())}
+                        placeholder="e.g. GAMB"
+                        className="w-full bg-[#121212] border border-zinc-700 px-3 py-2 text-xs text-zinc-100 uppercase outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase text-zinc-400 mb-1">
+                        Family Motto
+                      </label>
+                      <input
+                        type="text"
+                        value={newFamMotto}
+                        onChange={(e) => setNewFamMotto(e.target.value)}
+                        placeholder="Silence is golden."
+                        className="w-full bg-[#121212] border border-zinc-700 px-3 py-2 text-xs text-zinc-100 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() =>
+                      runAction(() => createFamilyAction(newFamName, newFamTag, newFamMotto))
+                    }
+                    className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs uppercase tracking-wider cursor-pointer"
+                  >
+                    Found Family as Don ($2,500)
+                  </button>
+                </div>
+              )}
+
+              {/* Directory of Active Families */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+                  Active Commission Families ({families.length})
+                </h3>
+                <div className="grid grid-cols-1 gap-3">
+                  {sortedFamilies.map((fam) => {
+                    const isMember = user.familyId === fam.id;
+                    return (
+                      <div
+                        key={fam.id}
+                        className="bg-[#1a1a1a] border border-zinc-800 p-4 flex flex-col md:flex-row md:items-center justify-between gap-4"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs px-2 py-0.5 bg-amber-500/20 border border-amber-500/40 text-amber-300 font-bold">
+                              [{fam.tag}]
+                            </span>
+                            <h4 className="text-sm font-bold text-zinc-100">{fam.name}</h4>
+                            <span className="text-[10px] px-2 py-0.5 bg-zinc-800 text-zinc-400 uppercase">
+                              HQ: {fam.homeCity}
+                            </span>
+                          </div>
+                          <p className="text-xs italic text-zinc-400">&ldquo;{fam.motto}&rdquo;</p>
+                          <div className="flex flex-wrap gap-4 text-[11px] text-zinc-400 pt-1">
+                            <span>
+                              Boss/Founder:{" "}
+                              <strong className="text-zinc-200">{fam.founderName}</strong>
+                            </span>
+                            <span>
+                              Members: <strong className="text-zinc-200">{fam.memberCount}</strong>
+                            </span>
+                            <span>
+                              Treasury:{" "}
+                              <strong className="text-amber-400">
+                                ${fam.treasuryCash.toLocaleString()}
+                              </strong>
+                            </span>
+                            <span>
+                              Syndicate Net Worth:{" "}
+                              <strong className="text-emerald-400">
+                                ${fam.combinedSyndicateWorth.toLocaleString()}
+                              </strong>
+                            </span>
+                          </div>
+                        </div>
+
+                        {!user.familyId ? (
+                          <button
+                            type="button"
+                            disabled={isPending}
+                            onClick={() => runAction(() => joinFamilyAction(fam.id))}
+                            className="shrink-0 px-4 py-2 bg-zinc-100 hover:bg-white text-black font-bold text-xs uppercase cursor-pointer"
+                          >
+                            Swear Allegiance (Join)
+                          </button>
+                        ) : (
+                          isMember && (
+                            <span className="text-xs px-3 py-1.5 bg-amber-500/15 border border-amber-500/40 text-amber-300 font-bold uppercase">
+                              Your Family
+                            </span>
+                          )
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* VIEWPORT: HALL OF INFAMY LEADERBOARDS (STAGE 5) */}
+          {activeTab === "leaderboards" && (
+            <section className="space-y-6">
+              <div className="bg-[#1a1a1a] border border-zinc-800 p-4">
+                <h2 className="text-lg font-bold tracking-tight text-zinc-100 uppercase">
+                  Hall of Infamy — Syndicate & Player Leaderboards
+                </h2>
+                <p className="text-xs text-zinc-400">
+                  Live standings of the most powerful Mafia Families and top individual earners
+                  across all six territories.
+                </p>
+              </div>
+
+              {/* 1. FAMILY LEADERBOARD */}
+              <div className="bg-[#1a1a1a] border border-zinc-800 p-4 space-y-3 overflow-x-auto">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold uppercase text-amber-400">
+                    Top Mafia Families (Syndicate Leaderboard)
+                  </h3>
+                  <span className="text-[11px] text-zinc-400">
+                    Ranked by Combined Syndicate Net Worth
+                  </span>
+                </div>
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-zinc-800 bg-[#121212] text-zinc-400">
+                      <th className="py-2.5 px-3">Rank</th>
+                      <th className="py-2.5 px-3">Syndicate</th>
+                      <th className="py-2.5 px-3">HQ Territory</th>
+                      <th className="py-2.5 px-3">Members</th>
+                      <th className="py-2.5 px-3">Total Family XP</th>
+                      <th className="py-2.5 px-3">Family Treasury</th>
+                      <th className="py-2.5 px-3">Combined Net Worth</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedFamilies.map((fam, idx) => (
+                      <tr
+                        key={fam.id}
+                        className={`border-b border-zinc-800/60 ${
+                          fam.id === user.familyId ? "bg-amber-500/10" : ""
+                        }`}
+                      >
+                        <td className="py-2.5 px-3 font-bold text-amber-400">#{idx + 1}</td>
+                        <td className="py-2.5 px-3 font-bold text-zinc-100">
+                          <span className="text-amber-300 mr-1.5">[{fam.tag}]</span>
+                          {fam.name}
+                        </td>
+                        <td className="py-2.5 px-3 text-zinc-400">{fam.homeCity}</td>
+                        <td className="py-2.5 px-3 text-zinc-200">{fam.memberCount}</td>
+                        <td className="py-2.5 px-3 text-zinc-200">
+                          {fam.totalRankPoints.toFixed(1)} XP
+                        </td>
+                        <td className="py-2.5 px-3 text-amber-300 font-bold">
+                          ${fam.treasuryCash.toLocaleString()}
+                        </td>
+                        <td className="py-2.5 px-3 text-emerald-400 font-bold">
+                          ${fam.combinedSyndicateWorth.toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 2. PLAYER LEADERBOARD */}
+              <div className="bg-[#1a1a1a] border border-zinc-800 p-4 space-y-3 overflow-x-auto">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <h3 className="text-sm font-bold uppercase text-emerald-400">
+                    Top Made Men (Player Leaderboard)
+                  </h3>
+                  <div className="flex gap-1.5 text-xs">
+                    {[
+                      { id: "xp" as const, label: "By Rank XP" },
+                      { id: "wealth" as const, label: "By Net Worth" },
+                      { id: "crimes" as const, label: "By Street Record" },
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setPlayerSort(tab.id)}
+                        className={`px-3 py-1 font-bold uppercase border cursor-pointer ${
+                          playerSort === tab.id
+                            ? "bg-amber-500 text-black border-amber-500"
+                            : "bg-[#121212] text-zinc-400 border-zinc-800 hover:text-zinc-200"
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-zinc-800 bg-[#121212] text-zinc-400">
+                      <th className="py-2.5 px-3">#</th>
+                      <th className="py-2.5 px-3">Mobster</th>
+                      <th className="py-2.5 px-3">Family</th>
+                      <th className="py-2.5 px-3">Hierarchy Rank</th>
+                      <th className="py-2.5 px-3">Rank XP</th>
+                      <th className="py-2.5 px-3">Net Worth</th>
+                      <th className="py-2.5 px-3">Crimes / GTA / Busts</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedPlayers.map((p, idx) => {
+                      const pRank = getRankInfo(p.rankPoints).current.name;
+                      const isMe = p.id === user.id;
+                      return (
+                        <tr
+                          key={p.id}
+                          className={`border-b border-zinc-800/60 ${
+                            isMe ? "bg-amber-500/15 font-bold" : ""
+                          }`}
+                        >
+                          <td className="py-2.5 px-3 font-bold text-amber-400">#{idx + 1}</td>
+                          <td className="py-2.5 px-3 text-zinc-100">
+                            {p.username} {isMe && <span className="text-amber-300">(YOU)</span>}
+                          </td>
+                          <td className="py-2.5 px-3 text-zinc-400">
+                            {p.familyTag ? (
+                              <span className="text-amber-300">
+                                [{p.familyTag}] {p.familyRole}
+                              </span>
+                            ) : (
+                              "Independent"
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-zinc-200">{pRank}</td>
+                          <td className="py-2.5 px-3 text-amber-300">
+                            {p.rankPoints.toFixed(1)} XP
+                          </td>
+                          <td className="py-2.5 px-3 text-emerald-400">
+                            ${p.netWorth.toLocaleString()}
+                          </td>
+                          <td className="py-2.5 px-3 text-zinc-300">
+                            {p.crimesCommitted} / {p.carsStolen} / {p.bustsSucceeded}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
 
@@ -1478,8 +2271,8 @@ export default function GameDashboard({
                     The Syndicate Gazette — Underworld Wire
                   </h2>
                   <p className="text-xs text-zinc-400">
-                    Dispatches covering major heists, precinct jailbreaks, exotic car thefts, and
-                    Anti-Tamper Timer Trap arrests.
+                    Dispatches covering major heists, precinct jailbreaks, exotic car thefts,
+                    casino windfalls, family charters, and Anti-Tamper Timer Trap arrests.
                   </p>
                 </div>
                 <span className="text-xs px-2.5 py-1 bg-zinc-900 border border-zinc-700 text-zinc-400">
@@ -1503,9 +2296,11 @@ export default function GameDashboard({
                                 ? "bg-amber-500/20 text-amber-300"
                                 : log.category === "GTA"
                                   ? "bg-sky-500/20 text-sky-300"
-                                  : log.category === "SMUGGLING"
+                                  : log.category === "SMUGGLING" || log.category === "CASINO"
                                     ? "bg-emerald-500/20 text-emerald-300"
-                                    : "bg-zinc-800 text-zinc-300"
+                                    : log.category === "FAMILY"
+                                      ? "bg-amber-500 text-black"
+                                      : "bg-zinc-800 text-zinc-300"
                           }`}
                         >
                           {log.category}
@@ -1536,7 +2331,8 @@ export default function GameDashboard({
                   16-Tier Omerta Hierarchy & Cargo Capacities
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Earn Rank XP from Crimes, GTA, Jail Busts, and profitable Smuggling runs.
+                  Earn Rank XP from Crimes, GTA, Jail Busts, Family Tribute, and profitable
+                  Smuggling runs.
                 </p>
               </div>
 
@@ -1586,4 +2382,3 @@ export default function GameDashboard({
     </div>
   );
 }
-

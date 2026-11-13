@@ -7,29 +7,45 @@ datasource db {
   url      = "file:./dev.db"
 }
 
+model Family {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  tag          String   @unique
+  motto        String   @default("Omerta above all.")
+  homeCity     String   @default("New York")
+  treasuryCash Int      @default(0)
+  founderName  String
+  createdAt    DateTime @default(now())
+  members      User[]
+}
+
 model User {
-  id              String               @id @default(cuid())
-  username        String               @unique
-  passwordHash    String
-  isNpc           Boolean              @default(false)
-  cash            Int                  @default(500)
-  bankCash        Int                  @default(0)
-  health          Int                  @default(100)
-  bullets         Int                  @default(15)
-  rankPoints      Float                @default(0)
-  city            String               @default("New York")
-  nextCrimeAt     DateTime             @default(now())
-  nextGtaAt       DateTime             @default(now())
-  jailUntil       DateTime             @default(now())
-  jailReason      String?
-  travelUntil     DateTime             @default(now())
-  crimesCommitted Int                  @default(0)
-  carsStolen      Int                  @default(0)
-  bustsSucceeded  Int                  @default(0)
-  createdAt       DateTime             @default(now())
-  vehicles        Vehicle[]
-  inventory       SmugglingInventory[]
-  logs            ActivityLog[]
+  id                 String               @id @default(cuid())
+  username           String               @unique
+  passwordHash       String
+  isNpc              Boolean              @default(false)
+  cash               Int                  @default(500)
+  bankCash           Int                  @default(0)
+  health             Int                  @default(100)
+  bullets            Int                  @default(15)
+  rankPoints         Float                @default(0)
+  city               String               @default("New York")
+  nextCrimeAt        DateTime             @default(now())
+  nextGtaAt          DateTime             @default(now())
+  jailUntil          DateTime             @default(now())
+  jailReason         String?
+  travelUntil        DateTime             @default(now())
+  crimesCommitted    Int                  @default(0)
+  carsStolen         Int                  @default(0)
+  bustsSucceeded     Int                  @default(0)
+  familyId           String?
+  family             Family?              @relation(fields: [familyId], references: [id], onDelete: SetNull)
+  familyRole         String               @default("Soldier")
+  familyContribution Int                  @default(0)
+  createdAt          DateTime             @default(now())
+  vehicles           Vehicle[]
+  inventory          SmugglingInventory[]
+  logs               ActivityLog[]
 }
 
 model CrimeConfig {
@@ -94,4 +110,3 @@ model ActivityLog {
   isPublic  Boolean  @default(true)
   createdAt DateTime @default(now())
 }
-
