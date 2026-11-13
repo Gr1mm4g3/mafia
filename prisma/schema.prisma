@@ -1,0 +1,97 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id              String               @id @default(cuid())
+  username        String               @unique
+  passwordHash    String
+  isNpc           Boolean              @default(false)
+  cash            Int                  @default(500)
+  bankCash        Int                  @default(0)
+  health          Int                  @default(100)
+  bullets         Int                  @default(15)
+  rankPoints      Float                @default(0)
+  city            String               @default("New York")
+  nextCrimeAt     DateTime             @default(now())
+  nextGtaAt       DateTime             @default(now())
+  jailUntil       DateTime             @default(now())
+  jailReason      String?
+  travelUntil     DateTime             @default(now())
+  crimesCommitted Int                  @default(0)
+  carsStolen      Int                  @default(0)
+  bustsSucceeded  Int                  @default(0)
+  createdAt       DateTime             @default(now())
+  vehicles        Vehicle[]
+  inventory       SmugglingInventory[]
+  logs            ActivityLog[]
+}
+
+model CrimeConfig {
+  id               String @id
+  tier             Int    @unique
+  name             String
+  description      String
+  baseCashMin      Int
+  baseCashMax      Int
+  baseSuccessRate  Float
+  rankRequirement  Int
+  cooldownSeconds  Int
+  rankPointsReward Float
+  jailSeconds      Int
+}
+
+model Vehicle {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  classTier   String
+  baseValue   Int
+  damage      Int
+  originCity  String
+  currentCity String
+  createdAt   DateTime @default(now())
+}
+
+model CityMarket {
+  id        String   @id @default(cuid())
+  city      String
+  itemType  String
+  itemName  String
+  price     Int
+  updatedAt DateTime @default(now())
+
+  @@unique([city, itemName])
+}
+
+model SmugglingInventory {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemType String
+  itemName String
+  quantity Int    @default(0)
+  avgCost  Int    @default(0)
+
+  @@unique([userId, itemName])
+}
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  actorName String
+  category  String
+  headline  String
+  details   String
+  city      String
+  isPublic  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
