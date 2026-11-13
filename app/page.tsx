@@ -2,12 +2,16 @@ import { Suspense } from "react";
 import { connection } from "next/server";
 import AuthScreen from "@/app/components/AuthScreen";
 import GameDashboard, {
+  SerializedBounty,
   SerializedCrime,
+  SerializedDistrict,
   SerializedFamily,
   SerializedInmate,
   SerializedLeaderboardPlayer,
   SerializedLog,
   SerializedMarketRow,
+  SerializedMonopoly,
+  SerializedOrganizedCrime,
   SerializedUser,
 } from "@/app/components/GameDashboard";
 import { getCurrentUser } from "@/lib/auth";
@@ -22,7 +26,18 @@ async function GameServerContent() {
   }
 
   const now = new Date();
-  const [crimes, inmatesRaw, marketsRaw, logsRaw, familiesRaw, allPlayersRaw] = await Promise.all([
+  const [
+    crimes,
+    inmatesRaw,
+    marketsRaw,
+    logsRaw,
+    familiesRaw,
+    allPlayersRaw,
+    districtsRaw,
+    monopoliesRaw,
+    bountiesRaw,
+    organizedCrimesRaw,
+  ] = await Promise.all([
     prisma.crimeConfig.findMany({
       orderBy: { tier: "asc" },
     }),
@@ -38,7 +53,7 @@ async function GameServerContent() {
     }),
     prisma.activityLog.findMany({
       orderBy: { createdAt: "desc" },
-      take: 35,
+      take: 45,
     }),
     prisma.family.findMany({
       include: {
@@ -54,6 +69,24 @@ async function GameServerContent() {
       },
       orderBy: { rankPoints: "desc" },
       take: 30,
+    }),
+    prisma.cityDistrict.findMany({
+      include: {
+        controllingFamily: true,
+      },
+      orderBy: { city: "asc" },
+    }),
+    prisma.cityMonopoly.findMany({
+      orderBy: [{ city: "asc" }, { propertyType: "asc" }],
+    }),
+    prisma.bounty.findMany({
+      orderBy: { rewardCash: "desc" },
+      take: 25,
+    }),
+    prisma.organizedCrime.findMany({
+      where: { status: "RECRUITING" },
+      orderBy: { createdAt: "desc" },
+      take: 15,
     }),
   ]);
 
@@ -74,6 +107,17 @@ async function GameServerContent() {
     crimesCommitted: user.crimesCommitted,
     carsStolen: user.carsStolen,
     bustsSucceeded: user.bustsSucceeded,
+    killsCount: user.killsCount,
+    deathsCount: user.deathsCount,
+    equippedWeapon: user.equippedWeapon,
+    weaponPower: user.weaponPower,
+    equippedArmor: user.equippedArmor,
+    armorDefense: user.armorDefense,
+    safehouseTier: user.safehouseTier,
+    safehouseName: user.safehouseName,
+    bodyguards: user.bodyguards,
+    heirUsername: user.heirUsername,
+    willMessage: user.willMessage,
     familyId: user.familyId,
     familyTag: user.family?.tag ?? null,
     familyName: user.family?.name ?? null,
@@ -94,6 +138,24 @@ async function GameServerContent() {
       itemName: inv.itemName,
       quantity: inv.quantity,
       avgCost: inv.avgCost,
+    })),
+    businesses: user.businesses.map((b) => ({
+      id: b.id,
+      businessType: b.businessType,
+      name: b.name,
+      city: b.city,
+      level: b.level,
+      hourlyYield: b.hourlyYield,
+      launderBonusPct: b.launderBonusPct,
+    })),
+    detectiveReports: user.detectiveReports.map((r) => ({
+      id: r.id,
+      targetUsername: r.targetUsername,
+      discoveredCity: r.discoveredCity,
+      targetHealth: r.targetHealth,
+      targetGuards: r.targetGuards,
+      targetFamily: r.targetFamily,
+      createdAtIso: r.createdAt.toISOString(),
     })),
   };
 
@@ -117,6 +179,7 @@ async function GameServerContent() {
     isNpc: inm.isNpc,
     city: inm.city,
     rankPoints: inm.rankPoints,
+    familyId: inm.familyId,
     jailUntilMs: inm.jailUntil.getTime(),
     jailReason: inm.jailReason,
   }));
@@ -149,6 +212,7 @@ async function GameServerContent() {
       homeCity: fam.homeCity,
       treasuryCash: fam.treasuryCash,
       founderName: fam.founderName,
+      warsWon: fam.warsWon,
       memberCount: fam.members.length,
       totalRankPoints,
       totalMemberWealth,
@@ -177,6 +241,55 @@ async function GameServerContent() {
     crimesCommitted: p.crimesCommitted,
     carsStolen: p.carsStolen,
     bustsSucceeded: p.bustsSucceeded,
+    killsCount: p.killsCount,
+  }));
+
+  const serializedDistricts: SerializedDistrict[] = districtsRaw.map((d) => ({
+    id: d.id,
+    city: d.city,
+    name: d.name,
+    description: d.description,
+    tributePerClaim: d.tributePerClaim,
+    defenseStrength: d.defenseStrength,
+    controllingFamilyId: d.controllingFamilyId,
+    controllingFamilyTag: d.controllingFamily?.tag ?? null,
+    controllingFamilyName: d.controllingFamily?.name ?? null,
+  }));
+
+  const serializedMonopolies: SerializedMonopoly[] = monopoliesRaw.map((m) => ({
+    id: m.id,
+    city: m.city,
+    propertyType: m.propertyType,
+    name: m.name,
+    ownerId: m.ownerId,
+    ownerName: m.ownerName,
+    buyoutPrice: m.buyoutPrice,
+    houseEdgePct: m.houseEdgePct,
+    bulletPrice: m.bulletPrice,
+    bulletStock: m.bulletStock,
+    vaultBalance: m.vaultBalance,
+  }));
+
+  const serializedBounties: SerializedBounty[] = bountiesRaw.map((b) => ({
+    id: b.id,
+    targetId: b.targetId,
+    targetUsername: b.targetUsername,
+    posterUsername: b.posterUsername,
+    rewardCash: b.rewardCash,
+    reason: b.reason,
+  }));
+
+  const serializedOrganizedCrimes: SerializedOrganizedCrime[] = organizedCrimesRaw.map((oc) => ({
+    id: oc.id,
+    title: oc.title,
+    city: oc.city,
+    targetPayoutMin: oc.targetPayoutMin,
+    targetPayoutMax: oc.targetPayoutMax,
+    leaderName: oc.leaderName,
+    weaponsName: oc.weaponsName,
+    demolitionsName: oc.demolitionsName,
+    driverName: oc.driverName,
+    status: oc.status,
   }));
 
   return (
@@ -188,6 +301,10 @@ async function GameServerContent() {
       logs={serializedLogs}
       families={serializedFamilies}
       leaderboardPlayers={serializedLeaderboardPlayers}
+      districts={serializedDistricts}
+      monopolies={serializedMonopolies}
+      bounties={serializedBounties}
+      organizedCrimes={serializedOrganizedCrimes}
       serverNowMs={now.getTime()}
     />
   );

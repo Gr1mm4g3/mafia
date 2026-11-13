@@ -66,6 +66,13 @@ export async function getCurrentUser() {
         orderBy: { createdAt: "desc" },
       },
       inventory: true,
+      businesses: {
+        orderBy: { level: "desc" },
+      },
+      detectiveReports: {
+        orderBy: { createdAt: "desc" },
+        take: 10,
+      },
     },
   });
 

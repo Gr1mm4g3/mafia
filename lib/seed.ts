@@ -1,5 +1,10 @@
 import { prisma } from "./db";
-import { CITIES, DEFAULT_CRIMES, SMUGGLING_ITEMS } from "./game-config";
+import {
+  CITIES,
+  DEFAULT_CRIMES,
+  INITIAL_DISTRICTS,
+  SMUGGLING_ITEMS,
+} from "./game-config";
 
 const SEED_FAMILIES = [
   {
@@ -195,7 +200,91 @@ export async function ensureWorldSeeded() {
       });
     }
 
-    // 4. Seed Initial Newspaper Logs if empty
+    const allFamilies = await prisma.family.findMany();
+    const famMap = new Map(allFamilies.map((f) => [f.tag, f.id]));
+
+    // 4. Seed City Districts for Family Wars & Territory
+    for (const dist of INITIAL_DISTRICTS) {
+      await prisma.cityDistrict.upsert({
+        where: { name: dist.name },
+        update: {},
+        create: {
+          city: dist.city,
+          name: dist.name,
+          description: dist.description,
+          tributePerClaim: dist.tributePerClaim,
+          defenseStrength: dist.defenseStrength,
+          controllingFamilyId: famMap.get(dist.defaultFamilyTag) ?? null,
+        },
+      });
+    }
+
+    // 5. Seed Player-Purchasable City Casinos & Bullet Factories
+    for (const city of CITIES) {
+      await prisma.cityMonopoly.upsert({
+        where: {
+          city_propertyType: {
+            city: city.name,
+            propertyType: "CASINO",
+          },
+        },
+        update: {},
+        create: {
+          city: city.name,
+          propertyType: "CASINO",
+          name: `${city.name} Velvet Parlor & Turf Club`,
+          ownerName: "The Commission",
+          buyoutPrice: 12000,
+          houseEdgePct: 5,
+          bulletPrice: 12,
+          bulletStock: 0,
+          vaultBalance: 3500,
+        },
+      });
+
+      await prisma.cityMonopoly.upsert({
+        where: {
+          city_propertyType: {
+            city: city.name,
+            propertyType: "BULLET_FACTORY",
+          },
+        },
+        update: {},
+        create: {
+          city: city.name,
+          propertyType: "BULLET_FACTORY",
+          name: `${city.name} Ordnance & Lead Foundry`,
+          ownerName: "The Commission",
+          buyoutPrice: 9500,
+          houseEdgePct: 5,
+          bulletPrice: 12,
+          bulletStock: 650,
+          vaultBalance: 2200,
+        },
+      });
+    }
+
+    // 6. Seed an active Organized Crime Crew Heist if none recruiting
+    const recruitingOc = await prisma.organizedCrime.count({
+      where: { status: "RECRUITING" },
+    });
+    if (recruitingOc === 0) {
+      await prisma.organizedCrime.create({
+        data: {
+          title: "Hijack Federal Reserve Armored Train",
+          city: "New York",
+          targetPayoutMin: 18000,
+          targetPayoutMax: 42000,
+          leaderName: "Vito_Castellano",
+          weaponsName: "Rocco_The_Butcher",
+          demolitionsName: null,
+          driverName: null,
+          status: "RECRUITING",
+        },
+      });
+    }
+
+    // 7. Seed Initial Newspaper Logs if empty
     const logCount = await prisma.activityLog.count();
     if (logCount === 0) {
       await prisma.activityLog.createMany({
@@ -283,6 +372,24 @@ export async function ensureWorldSeeded() {
           familyRole: npc.familyRole,
           jailUntil,
           jailReason: npc.jailReason,
+        },
+      });
+    }
+  }
+
+  const bountyCount = await prisma.bounty.count();
+  if (bountyCount === 0) {
+    const npcTarget = await prisma.user.findUnique({
+      where: { username: "Rocco_The_Butcher" },
+    });
+    if (npcTarget) {
+      await prisma.bounty.create({
+        data: {
+          targetId: npcTarget.id,
+          targetUsername: npcTarget.username,
+          posterUsername: "The Commission",
+          rewardCash: 6500,
+          reason: "Skimming Las Vegas wire rooms without Commission sanction",
         },
       });
     }

@@ -8,15 +8,17 @@ datasource db {
 }
 
 model Family {
-  id           String   @id @default(cuid())
-  name         String   @unique
-  tag          String   @unique
-  motto        String   @default("Omerta above all.")
-  homeCity     String   @default("New York")
-  treasuryCash Int      @default(0)
+  id           String         @id @default(cuid())
+  name         String         @unique
+  tag          String         @unique
+  motto        String         @default("Omerta above all.")
+  homeCity     String         @default("New York")
+  treasuryCash Int            @default(0)
   founderName  String
-  createdAt    DateTime @default(now())
+  warsWon      Int            @default(0)
+  createdAt    DateTime       @default(now())
   members      User[]
+  districts    CityDistrict[]
 }
 
 model User {
@@ -38,6 +40,17 @@ model User {
   crimesCommitted    Int                  @default(0)
   carsStolen         Int                  @default(0)
   bustsSucceeded     Int                  @default(0)
+  killsCount         Int                  @default(0)
+  deathsCount        Int                  @default(0)
+  equippedWeapon     String               @default("Fists & Switchblade")
+  weaponPower        Int                  @default(5)
+  equippedArmor      String               @default("Street Clothes")
+  armorDefense       Int                  @default(0)
+  safehouseTier      Int                  @default(0)
+  safehouseName      String               @default("Backroom Cot")
+  bodyguards          Int                  @default(0)
+  heirUsername       String?
+  willMessage        String               @default("Leave my piece to my successor and avenge my name.")
   familyId           String?
   family             Family?              @relation(fields: [familyId], references: [id], onDelete: SetNull)
   familyRole         String               @default("Soldier")
@@ -46,6 +59,8 @@ model User {
   vehicles           Vehicle[]
   inventory          SmugglingInventory[]
   logs               ActivityLog[]
+  businesses         UserBusiness[]
+  detectiveReports   DetectiveReport[]
 }
 
 model CrimeConfig {
@@ -96,6 +111,88 @@ model SmugglingInventory {
   avgCost  Int    @default(0)
 
   @@unique([userId, itemName])
+}
+
+model UserBusiness {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessType    String
+  name            String
+  city            String
+  level           Int      @default(1)
+  hourlyYield     Int
+  launderBonusPct Int      @default(1)
+  lastCollectedAt DateTime @default(now())
+
+  @@unique([userId, businessType])
+}
+
+model CityDistrict {
+  id                  String   @id @default(cuid())
+  city                String
+  name                String   @unique
+  description         String
+  tributePerClaim     Int
+  defenseStrength     Int      @default(100)
+  controllingFamilyId String?
+  controllingFamily   Family?  @relation(fields: [controllingFamilyId], references: [id], onDelete: SetNull)
+  lastClaimedAt       DateTime @default(now())
+}
+
+model CityMonopoly {
+  id           String   @id @default(cuid())
+  city         String
+  propertyType String   // "CASINO" | "BULLET_FACTORY"
+  name         String
+  ownerId      String?
+  ownerName    String   @default("The Commission")
+  buyoutPrice  Int      @default(15000)
+  houseEdgePct Int      @default(5)
+  bulletPrice  Int      @default(12)
+  bulletStock  Int      @default(500)
+  vaultBalance Int      @default(2500)
+  updatedAt    DateTime @default(now())
+
+  @@unique([city, propertyType])
+}
+
+model Bounty {
+  id             String   @id @default(cuid())
+  targetId       String
+  targetUsername String
+  posterUsername String
+  rewardCash     Int
+  reason         String
+  createdAt      DateTime @default(now())
+}
+
+model DetectiveReport {
+  id             String   @id @default(cuid())
+  hunterId       String
+  hunter         User     @relation(fields: [hunterId], references: [id], onDelete: Cascade)
+  targetId       String
+  targetUsername String
+  discoveredCity String
+  targetHealth   Int
+  targetGuards   Int
+  targetFamily   String?
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+}
+
+model OrganizedCrime {
+  id              String   @id @default(cuid())
+  title           String
+  city            String
+  targetPayoutMin Int
+  targetPayoutMax Int
+  leaderName      String
+  weaponsName     String?
+  demolitionsName String?
+  driverName      String?
+  status          String   @default("RECRUITING") // "RECRUITING" | "COMPLETED"
+  createdAt       DateTime @default(now())
 }
 
 model ActivityLog {

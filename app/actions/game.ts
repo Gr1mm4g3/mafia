@@ -10,12 +10,18 @@ import {
   verifyPassword,
 } from "@/lib/auth";
 import {
+  ARMOR_CATALOG,
   CAR_CATALOG,
   CITIES,
+  DERBY_HORSES,
+  FRONT_BUSINESS_CATALOG,
   getRankInfo,
   GTA_OPTIONS,
+  OC_HEIST_TEMPLATES,
   RANKS,
+  SAFEHOUSE_CATALOG,
   SMUGGLING_ITEMS,
+  WEAPONS_CATALOG,
 } from "@/lib/game-config";
 import { ensureWorldSeeded } from "@/lib/seed";
 
@@ -40,6 +46,23 @@ function makeResponse(
     message,
     timestamp: Date.now(),
   };
+}
+
+/**
+ * Draws from Pocket Cash (`cash`) first, and automatically covers any remainder
+ * from Personal Bank (`bankCash`) so money earned from Fronts, Casinos, and Vault
+ * is immediately spendable everywhere!
+ */
+function computePaymentSplit(
+  user: { cash: number; bankCash: number },
+  totalCost: number
+): { canAfford: boolean; fromCash: number; fromBank: number } {
+  if (user.cash + user.bankCash < totalCost) {
+    return { canAfford: false, fromCash: 0, fromBank: 0 };
+  }
+  const fromCash = Math.min(user.cash, totalCost);
+  const fromBank = totalCost - fromCash;
+  return { canAfford: true, fromCash, fromBank };
 }
 
 export async function registerOrLoginAction(formData: FormData): Promise<ActionResponse> {
@@ -751,19 +774,21 @@ export async function bribeWardenAction(): Promise<ActionResponse> {
     const remainingSec = Math.ceil((user.jailUntil.getTime() - nowMs) / 1000);
     const bribeCost = Math.max(150, remainingSec * 8);
 
-    if (user.cash < bribeCost) {
+    const split = computePaymentSplit(user, bribeCost);
+    if (!split.canAfford) {
       return makeResponse(
         false,
         "danger",
-        "Not Enough Cash on Hand",
-        `The turnkey demands $${bribeCost.toLocaleString()} cash in an envelope (you have $${user.cash.toLocaleString()}).`
+        "Not Enough Funds",
+        `The turnkey demands $${bribeCost.toLocaleString()} (you have $${(user.cash + user.bankCash).toLocaleString()} total).`
       );
     }
 
     await tx.user.update({
       where: { id: user.id },
       data: {
-        cash: { decrement: bribeCost },
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
         jailUntil: new Date(nowMs - 1000),
         jailReason: null,
       },
@@ -834,12 +859,13 @@ export async function travelToCityAction(destinationCity: string): Promise<Actio
       );
     }
 
-    if (user.cash < citySpec.ticketCost) {
+    const split = computePaymentSplit(user, citySpec.ticketCost);
+    if (!split.canAfford) {
       return makeResponse(
         false,
         "danger",
-        "Insufficient Pocket Cash",
-        `Ticket to ${citySpec.name} costs $${citySpec.ticketCost.toLocaleString()} cash.`
+        "Insufficient Funds",
+        `Ticket to ${citySpec.name} costs $${citySpec.ticketCost.toLocaleString()}.`
       );
     }
 
@@ -849,7 +875,8 @@ export async function travelToCityAction(destinationCity: string): Promise<Actio
     await tx.user.update({
       where: { id: user.id },
       data: {
-        cash: { decrement: citySpec.ticketCost },
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
         city: citySpec.name,
         travelUntil,
       },
@@ -934,10 +961,11 @@ export async function tradeSmugglingItemAction(
       .filter((inv) => inv.itemType === itemSpec.itemType)
       .reduce((acc, inv) => acc + inv.quantity, 0);
 
+    const safehouseSpec = SAFEHOUSE_CATALOG[user.safehouseTier] ?? SAFEHOUSE_CATALOG[0];
     const maxCapacity =
       itemSpec.itemType === "booze"
-        ? rankInfo.current.boozeCapacity
-        : rankInfo.current.narcoticsCapacity;
+        ? rankInfo.current.boozeCapacity + safehouseSpec.boozeBonus
+        : rankInfo.current.narcoticsCapacity + safehouseSpec.narcoticsBonus;
 
     const existingRow = user.inventory.find((inv) => inv.itemName === itemSpec.itemName);
 
@@ -952,11 +980,12 @@ export async function tradeSmugglingItemAction(
       }
 
       const totalCost = marketQuote.price * cleanQty;
-      if (user.cash < totalCost) {
+      const split = computePaymentSplit(user, totalCost);
+      if (!split.canAfford) {
         return makeResponse(
           false,
           "danger",
-          "Insufficient Cash",
+          "Insufficient Funds",
           `${cleanQty}x ${itemSpec.itemName} costs $${totalCost.toLocaleString()} in ${user.city}.`
         );
       }
@@ -969,7 +998,8 @@ export async function tradeSmugglingItemAction(
       await tx.user.update({
         where: { id: user.id },
         data: {
-          cash: { decrement: totalCost },
+          cash: { decrement: split.fromCash },
+          bankCash: { decrement: split.fromBank },
         },
       });
 
@@ -1320,11 +1350,12 @@ export async function healAtDoctorAction(): Promise<ActionResponse> {
 
     const missing = 100 - user.health;
     const cost = missing * 15;
-    if (user.cash < cost) {
+    const split = computePaymentSplit(user, cost);
+    if (!split.canAfford) {
       return makeResponse(
         false,
         "danger",
-        "Insufficient Cash",
+        "Insufficient Funds",
         `Back-alley surgeon demands $${cost.toLocaleString()} to stitch you up.`
       );
     }
@@ -1332,7 +1363,8 @@ export async function healAtDoctorAction(): Promise<ActionResponse> {
     await tx.user.update({
       where: { id: user.id },
       data: {
-        cash: { decrement: cost },
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
         health: 100,
       },
     });
@@ -1359,11 +1391,12 @@ export async function buyBulletsAction(packs: number): Promise<ActionResponse> {
     const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
     if (!user) return makeResponse(false, "danger", "Error", "User missing.");
 
-    if (user.cash < totalCost) {
+    const split = computePaymentSplit(user, totalCost);
+    if (!split.canAfford) {
       return makeResponse(
         false,
         "danger",
-        "Insufficient Cash",
+        "Insufficient Funds",
         `${bulletsAdded} rounds of .45 ACP costs $${totalCost.toLocaleString()}.`
       );
     }
@@ -1371,7 +1404,8 @@ export async function buyBulletsAction(packs: number): Promise<ActionResponse> {
     await tx.user.update({
       where: { id: user.id },
       data: {
-        cash: { decrement: totalCost },
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
         bullets: { increment: bulletsAdded },
       },
     });
@@ -1954,12 +1988,13 @@ export async function contributeFamilyTreasuryAction(amount: number): Promise<Ac
       );
     }
 
-    if (user.cash < cleanAmount) {
+    const split = computePaymentSplit(user, cleanAmount);
+    if (!split.canAfford) {
       return makeResponse(
         false,
         "danger",
-        "Insufficient Pocket Cash",
-        `You only have $${user.cash.toLocaleString()} on hand.`
+        "Insufficient Funds",
+        `You have $${(user.cash + user.bankCash).toLocaleString()} total across Pocket Cash and Personal Bank.`
       );
     }
 
@@ -1984,7 +2019,8 @@ export async function contributeFamilyTreasuryAction(amount: number): Promise<Ac
     await tx.user.update({
       where: { id: user.id },
       data: {
-        cash: { decrement: cleanAmount },
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
         familyContribution: newContribution,
         familyRole: newRole,
         rankPoints: Number((user.rankPoints + xpBonus).toFixed(2)),
@@ -1998,7 +2034,7 @@ export async function contributeFamilyTreasuryAction(amount: number): Promise<Ac
           actorName: user.username,
           category: "FAMILY",
           headline: `${user.username} Paid $${cleanAmount.toLocaleString()} Tribute to [${user.family.tag}] ${user.family.name}`,
-          details: `Family Treasury strengthened (${user.username} standing: ${newRole}).`,
+          details: `Shared Family Vault strengthened (${user.username} standing: ${newRole}).`,
           city: user.city,
         },
       });
@@ -2008,10 +2044,1517 @@ export async function contributeFamilyTreasuryAction(amount: number): Promise<Ac
     return makeResponse(
       true,
       "success",
-      `Contributed $${cleanAmount.toLocaleString()} to [${user.family.tag}]`,
-      `Family Treasury increased by $${cleanAmount.toLocaleString()}${xpBonus > 0 ? ` (+${xpBonus} Rank XP)` : ""}. Your Family role: ${newRole}.`
+      `Deposited $${cleanAmount.toLocaleString()} into [${user.family.tag}] Vault`,
+      `Shared Family Vault increased by $${cleanAmount.toLocaleString()}${xpBonus > 0 ? ` (+${xpBonus} Rank XP)` : ""}. Your role: ${newRole}.`
     );
   });
 }
+
+export async function withdrawFamilyTreasuryAction(amount: number): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanAmount = Math.floor(Number(amount));
+  if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) {
+    return makeResponse(false, "warning", "Invalid Amount", "Enter a positive withdrawal amount.");
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { family: true },
+    });
+
+    if (!user || !user.family) {
+      return makeResponse(
+        false,
+        "warning",
+        "No Family",
+        "You must belong to a Family to access the Shared Family Vault."
+      );
+    }
+
+    if (user.family.treasuryCash < cleanAmount) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Shared Family Vault Funds",
+        `[${user.family.tag}] Shared Vault currently holds $${user.family.treasuryCash.toLocaleString()}.`
+      );
+    }
+
+    await tx.family.update({
+      where: { id: user.family.id },
+      data: {
+        treasuryCash: { decrement: cleanAmount },
+      },
+    });
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { increment: cleanAmount },
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Withdrew $${cleanAmount.toLocaleString()} from [${user.family.tag}] Vault`,
+      `$${cleanAmount.toLocaleString()} moved from the Shared Family Vault into your Pocket Cash.`
+    );
+  });
+}
+
+/**
+ * STAGE 6.1: SHARED FAMILY VAULT BAILOUT & FAMILY WARS / TERRITORY CONTROL
+ */
+export async function familyBailMemberAction(inmateId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const nowMs = Date.now();
+
+  return prisma.$transaction(async (tx) => {
+    const caller = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { family: true },
+    });
+    const inmate = await tx.user.findUnique({ where: { id: inmateId } });
+
+    if (!caller || !caller.family || !inmate) {
+      return makeResponse(
+        false,
+        "warning",
+        "No Syndicate Vault Access",
+        "You must belong to a Mafia Family to use the Shared Family Vault."
+      );
+    }
+
+    if (inmate.familyId !== caller.family.id) {
+      return makeResponse(
+        false,
+        "warning",
+        "Not a Family Member",
+        `${inmate.username} is not a made member of [${caller.family.tag}].`
+      );
+    }
+
+    if (nowMs >= inmate.jailUntil.getTime()) {
+      return makeResponse(
+        false,
+        "warning",
+        "Already Released",
+        `${inmate.username} is already out on the street.`
+      );
+    }
+
+    const bailCost = 250;
+    if (caller.family.treasuryCash < bailCost) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Family Treasury",
+        `Bailing out a member requires $${bailCost} in the Shared Family Vault.`
+      );
+    }
+
+    await tx.family.update({
+      where: { id: caller.family.id },
+      data: { treasuryCash: { decrement: bailCost } },
+    });
+
+    await tx.user.update({
+      where: { id: inmate.id },
+      data: {
+        jailUntil: new Date(nowMs - 1000),
+        jailReason: null,
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        userId: caller.id,
+        actorName: caller.username,
+        category: "FAMILY",
+        headline: `[${caller.family.tag}] Bailed ${inmate.username} Out of ${inmate.city} Lockup`,
+        details: `Syndicate lawyers posted $${bailCost} from the Shared Family Vault.`,
+        city: inmate.city,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Bailed Out ${inmate.username}!`,
+      `Used $${bailCost} from [${caller.family.tag}]'s Shared Family Vault to release ${inmate.username}.`
+    );
+  });
+}
+
+export async function attackDistrictAction(districtId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const warChestCost = 1500;
+  const bulletsRequired = 15;
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { family: true },
+    });
+    const district = await tx.cityDistrict.findUnique({
+      where: { id: districtId },
+      include: { controllingFamily: true },
+    });
+
+    if (!user || !user.family || !district) {
+      return makeResponse(
+        false,
+        "warning",
+        "Family Required",
+        "You must belong to a Mafia Family to wage Syndicate Turf Wars."
+      );
+    }
+
+    if (district.controllingFamilyId === user.family.id) {
+      return makeResponse(
+        false,
+        "warning",
+        "Already Controlled",
+        `[${user.family.tag}] already controls ${district.name}.`
+      );
+    }
+
+    if (user.family.treasuryCash < warChestCost) {
+      return makeResponse(
+        false,
+        "danger",
+        "War Chest Too Low",
+        `Launching a turf assault requires $${warChestCost.toLocaleString()} in your Family Treasury.`
+      );
+    }
+
+    if (user.bullets < bulletsRequired) {
+      return makeResponse(
+        false,
+        "danger",
+        "Not Enough Ammunition",
+        `You need at least ${bulletsRequired} rounds of .45 ammo to lead a district assault.`
+      );
+    }
+
+    const attackPower = 55 + user.weaponPower * 0.4 + Math.random() * 65;
+    const won = attackPower >= district.defenseStrength * 0.85;
+
+    await tx.family.update({
+      where: { id: user.family.id },
+      data: {
+        treasuryCash: { decrement: warChestCost },
+        ...(won ? { warsWon: { increment: 1 } } : {}),
+      },
+    });
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        bullets: { decrement: bulletsRequired },
+        rankPoints: { increment: won ? 28 : 5 },
+      },
+    });
+
+    if (won) {
+      const oldHolder = district.controllingFamily
+        ? `[${district.controllingFamily.tag}] ${district.controllingFamily.name}`
+        : "Independent Bosses";
+
+      await tx.cityDistrict.update({
+        where: { id: district.id },
+        data: {
+          controllingFamilyId: user.family.id,
+          defenseStrength: Math.min(150, district.defenseStrength + 5),
+          lastClaimedAt: new Date(),
+        },
+      });
+
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "FAMILY_WAR",
+          headline: `TURF WAR: [${user.family.tag}] Seized ${district.name} (${district.city})!`,
+          details: `Led by ${user.username}, [${user.family.tag}] drove out ${oldHolder} in a hail of Tommy-gun fire.`,
+          city: district.city,
+        },
+      });
+
+      revalidatePath("/");
+      return makeResponse(
+        true,
+        "success",
+        `Captured ${district.name}!`,
+        `[${user.family.tag}] seized ${district.name} from ${oldHolder}! Earned +28 Rank XP.`
+      );
+    } else {
+      revalidatePath("/");
+      return makeResponse(
+        false,
+        "danger",
+        `Assault Repelled at ${district.name}`,
+        `Rival gunmen held the barricades. Your crew spent ${bulletsRequired} bullets and $${warChestCost.toLocaleString()} war funds.`
+      );
+    }
+  });
+}
+
+export async function claimDistrictTributeAction(districtId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { family: true },
+    });
+    const district = await tx.cityDistrict.findUnique({ where: { id: districtId } });
+
+    if (!user || !user.family || !district || district.controllingFamilyId !== user.family.id) {
+      return makeResponse(
+        false,
+        "warning",
+        "Not Your Turf",
+        "Your Family must control this district to collect protection tribute."
+      );
+    }
+
+    const personalCut = 350;
+    const vaultCut = district.tributePerClaim;
+
+    await tx.family.update({
+      where: { id: user.family.id },
+      data: { treasuryCash: { increment: vaultCut } },
+    });
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: { cash: { increment: personalCut } },
+    });
+
+    await tx.cityDistrict.update({
+      where: { id: district.id },
+      data: { lastClaimedAt: new Date() },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Collected ${district.name} Racket Tribute`,
+      `$${vaultCut.toLocaleString()} deposited into [${user.family.tag}] Treasury + $${personalCut} collector's envelope in your pocket!`
+    );
+  });
+}
+
+/**
+ * STAGE 6.2: ECONOMY SINKS — FRONT BUSINESSES, SAFEHOUSES, PLAYER CASINOS & HORSE RACING
+ */
+export async function buyOrUpgradeBusinessAction(businessType: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const spec = FRONT_BUSINESS_CATALOG.find((b) => b.businessType === businessType);
+  if (!spec) return makeResponse(false, "danger", "Invalid Front", "Unknown business type.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { businesses: true },
+    });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    const existing = user.businesses.find((b) => b.businessType === businessType);
+    const nextLevel = (existing?.level ?? 0) + 1;
+    const cost = Math.round(spec.baseCost * Math.pow(1.55, nextLevel - 1));
+
+    const split = computePaymentSplit(user, cost);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Funds",
+        `${existing ? `Upgrading ${spec.name} to Lv.${nextLevel}` : `Acquiring ${spec.name}`} requires $${cost.toLocaleString()} (you have $${(user.cash + user.bankCash).toLocaleString()} across Pocket & Personal Bank).`
+      );
+    }
+
+    const newYield = spec.baseHourlyYield * nextLevel;
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+        rankPoints: { increment: 10 },
+      },
+    });
+
+    await tx.userBusiness.upsert({
+      where: {
+        userId_businessType: {
+          userId: user.id,
+          businessType: spec.businessType,
+        },
+      },
+      update: {
+        level: nextLevel,
+        hourlyYield: newYield,
+      },
+      create: {
+        userId: user.id,
+        businessType: spec.businessType,
+        name: spec.name,
+        city: user.city,
+        level: 1,
+        hourlyYield: spec.baseHourlyYield,
+        launderBonusPct: spec.launderBonusPct,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `${spec.name} (Lv.${nextLevel}) Operational!`,
+      `Generating $${newYield.toLocaleString()}/hr in clean bank revenue (+10 Rank XP).`
+    );
+  });
+}
+
+export async function collectBusinessIncomeAction(): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const now = new Date();
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { businesses: true },
+    });
+    if (!user || user.businesses.length === 0) {
+      return makeResponse(
+        false,
+        "warning",
+        "No Front Businesses",
+        "Acquire at least one Front Business before collecting clean revenue."
+      );
+    }
+
+    let totalCleanCash = 0;
+    for (const b of user.businesses) {
+      const elapsedHours = Math.max(
+        0.15,
+        (now.getTime() - b.lastCollectedAt.getTime()) / (1000 * 60 * 60)
+      );
+      totalCleanCash += Math.round(b.hourlyYield * Math.min(24, elapsedHours));
+      await tx.userBusiness.update({
+        where: { id: b.id },
+        data: { lastCollectedAt: now },
+      });
+    }
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: { cash: { increment: totalCleanCash } },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Collected $${totalCleanCash.toLocaleString()} Front Business Income!`,
+      `$${totalCleanCash.toLocaleString()} added directly to your Pocket Cash.`
+    );
+  });
+}
+
+export async function upgradeSafehouseAction(targetTier: number): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const spec = SAFEHOUSE_CATALOG.find((s) => s.tier === targetTier);
+  if (!spec) return makeResponse(false, "danger", "Invalid Property", "Real estate tier not found.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (user.safehouseTier >= spec.tier) {
+      return makeResponse(
+        false,
+        "warning",
+        "Already Owned",
+        `You already own ${user.safehouseName}.`
+      );
+    }
+
+    const split = computePaymentSplit(user, spec.cost);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Funds",
+        `${spec.name} deeds cost $${spec.cost.toLocaleString()} (you have $${(user.cash + user.bankCash).toLocaleString()} total).`
+      );
+    }
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+        safehouseTier: spec.tier,
+        safehouseName: spec.name,
+        rankPoints: { increment: spec.tier * 12 },
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Moved Into ${spec.name}!`,
+      `Storage expanded by +${spec.boozeBonus} Booze crates & +${spec.narcoticsBonus} Narcotics kilos (+${spec.stealthBonusPct}% police evasion).`
+    );
+  });
+}
+
+export async function playHorseRacingAction(
+  horseId: number,
+  wager: number
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanWager = Math.floor(Number(wager));
+  if (!Number.isFinite(cleanWager) || cleanWager < 20) {
+    return makeResponse(false, "warning", "Minimum Turf Bet", "Minimum Derby bet is $20.");
+  }
+
+  const chosenHorse = DERBY_HORSES.find((h) => h.id === Number(horseId));
+  if (!chosenHorse) return makeResponse(false, "danger", "Invalid Horse", "Select a horse.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (user.cash < cleanWager) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Cash",
+        `You only carry $${user.cash.toLocaleString()}.`
+      );
+    }
+
+    // Weighted RNG across the 5 horses
+    let r = Math.random() * 100;
+    let winningHorse = DERBY_HORSES[0];
+    for (const h of DERBY_HORSES) {
+      r -= h.winChance;
+      if (r <= 0) {
+        winningHorse = h;
+        break;
+      }
+    }
+
+    const won = winningHorse.id === chosenHorse.id;
+    const grossPayout = won ? Math.round(cleanWager * chosenHorse.multiplier) : 0;
+    const netDelta = grossPayout - cleanWager;
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: { cash: { increment: netDelta } },
+    });
+
+    // Credit local player-owned Casino vault with house rake on losses
+    if (!won) {
+      await tx.cityMonopoly.updateMany({
+        where: { city: user.city, propertyType: "CASINO" },
+        data: { vaultBalance: { increment: Math.round(cleanWager * 0.25) } },
+      });
+    }
+
+    if (netDelta >= 1500) {
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "CASINO",
+          headline: `${user.username}Backed Winner "${winningHorse.name}" at ${user.city} Downs!`,
+          details: `Collected $${grossPayout.toLocaleString()} (${chosenHorse.multiplier}x odds) at the Syndicate Turf Club.`,
+          city: user.city,
+        },
+      });
+    }
+
+    revalidatePath("/");
+
+    if (won) {
+      return makeResponse(
+        true,
+        "success",
+        `PHOTO FINISH: "${winningHorse.name}" Wins! (+$${grossPayout.toLocaleString()})`,
+        `Your horse surged down the homestretch at ${chosenHorse.multiplier}x odds (net +$${netDelta.toLocaleString()}).`
+      );
+    }
+
+    return makeResponse(
+      false,
+      "warning",
+      `Track Result: "${winningHorse.name}" Took 1st Place`,
+      `Your pick "${chosenHorse.name}" finished out of the money (-$${cleanWager.toLocaleString()}).`
+    );
+  });
+}
+
+export async function buyCityMonopolyAction(monopolyId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const prop = await tx.cityMonopoly.findUnique({ where: { id: monopolyId } });
+
+    if (!user || !prop) return makeResponse(false, "danger", "Not Found", "Monopoly not found.");
+
+    if (prop.ownerId === user.id) {
+      return makeResponse(false, "warning", "Already Owned", `You already own ${prop.name}.`);
+    }
+
+    const split = computePaymentSplit(user, prop.buyoutPrice);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Capital",
+        `Taking over ${prop.name} requires $${prop.buyoutPrice.toLocaleString()} (you have $${(user.cash + user.bankCash).toLocaleString()} total).`
+      );
+    }
+
+    const nextBuyout = Math.round(prop.buyoutPrice * 1.35);
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+        rankPoints: { increment: 35 },
+      },
+    });
+
+    await tx.cityMonopoly.update({
+      where: { id: prop.id },
+      data: {
+        ownerId: user.id,
+        ownerName: user.username,
+        buyoutPrice: nextBuyout,
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        userId: user.id,
+        actorName: user.username,
+        category: "CASINO",
+        headline: `${user.username} Bought Out ${prop.name} in ${prop.city}!`,
+        details: `Acquired controlling deed for $${prop.buyoutPrice.toLocaleString()}.`,
+        city: prop.city,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `You Now Own ${prop.name}!`,
+      `You control the ${prop.city} ${prop.propertyType === "CASINO" ? "Casino House Edge" : "Bullet Factory"} (+35 Rank XP).`
+    );
+  });
+}
+
+export async function configureMonopolyAction(
+  monopolyId: string,
+  houseEdgePct: number,
+  bulletPrice: number,
+  restockBullets: boolean
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const prop = await tx.cityMonopoly.findUnique({ where: { id: monopolyId } });
+
+    if (!user || !prop || prop.ownerId !== user.id) {
+      return makeResponse(
+        false,
+        "danger",
+        "Not the Owner",
+        "Only the proprietor can configure this syndicate monopoly."
+      );
+    }
+
+    const cleanEdge = Math.max(2, Math.min(12, Math.floor(Number(houseEdgePct) || 5)));
+    const cleanBulletPrice = Math.max(8, Math.min(35, Math.floor(Number(bulletPrice) || 12)));
+
+    if (restockBullets) {
+      const restockCost = 900;
+      const split = computePaymentSplit(user, restockCost);
+      if (!split.canAfford) {
+        return makeResponse(
+          false,
+          "danger",
+          "Insufficient Funds",
+          `Smelting +250 bullets costs $${restockCost} in lead & brass.`
+        );
+      }
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          cash: { decrement: split.fromCash },
+          bankCash: { decrement: split.fromBank },
+        },
+      });
+    }
+
+    await tx.cityMonopoly.update({
+      where: { id: prop.id },
+      data: {
+        houseEdgePct: cleanEdge,
+        bulletPrice: cleanBulletPrice,
+        ...(restockBullets ? { bulletStock: { increment: 250 } } : {}),
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Updated ${prop.name}`,
+      restockBullets
+        ? `Manufactured +250 rounds into factory stock and updated rates.`
+        : `Updated house parameters (${prop.propertyType === "CASINO" ? `${cleanEdge}% house edge` : `$${cleanBulletPrice}/bullet`}).`
+    );
+  });
+}
+
+export async function claimMonopolyProfitsAction(monopolyId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const prop = await tx.cityMonopoly.findUnique({ where: { id: monopolyId } });
+
+    if (!user || !prop || prop.ownerId !== user.id) {
+      return makeResponse(false, "danger", "Not the Owner", "You do not own this property.");
+    }
+
+    if (prop.vaultBalance <= 0) {
+      return makeResponse(false, "warning", "Vault Empty", "No house profits to skim yet.");
+    }
+
+    const payout = prop.vaultBalance;
+    await tx.cityMonopoly.update({
+      where: { id: prop.id },
+      data: { vaultBalance: 0 },
+    });
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: { cash: { increment: payout } },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Skimmed $${payout.toLocaleString()} House Profits!`,
+      `$${payout.toLocaleString()} from ${prop.name} was added directly to your Pocket Cash.`
+    );
+  });
+}
+
+/**
+ * STAGE 6.3: COMBAT, GUN SHOP, BODYGUARDS, HITLIST BOUNTIES, DETECTIVES & ASSASSINATIONS
+ */
+export async function buyWeaponOrArmorAction(
+  kind: "weapon" | "armor",
+  itemName: string
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (kind === "weapon") {
+      const spec = WEAPONS_CATALOG.find((w) => w.name === itemName);
+      if (!spec) return makeResponse(false, "danger", "Not Found", "Weapon not found.");
+      const split = computePaymentSplit(user, spec.cost);
+      if (!split.canAfford) {
+        return makeResponse(
+          false,
+          "danger",
+          "Insufficient Funds",
+          `${spec.name} costs $${spec.cost.toLocaleString()}.`
+        );
+      }
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          cash: { decrement: split.fromCash },
+          bankCash: { decrement: split.fromBank },
+          equippedWeapon: spec.name,
+          weaponPower: spec.power,
+        },
+      });
+      revalidatePath("/");
+      return makeResponse(
+        true,
+        "success",
+        `Equipped ${spec.name}`,
+        `Firepower increased to +${spec.power} Combat Rating.`
+      );
+    } else {
+      const spec = ARMOR_CATALOG.find((a) => a.name === itemName);
+      if (!spec) return makeResponse(false, "danger", "Not Found", "Armor not found.");
+      const split = computePaymentSplit(user, spec.cost);
+      if (!split.canAfford) {
+        return makeResponse(
+          false,
+          "danger",
+          "Insufficient Funds",
+          `${spec.name} costs $${spec.cost.toLocaleString()}.`
+        );
+      }
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          cash: { decrement: split.fromCash },
+          bankCash: { decrement: split.fromBank },
+          equippedArmor: spec.name,
+          armorDefense: spec.defense,
+        },
+      });
+      revalidatePath("/");
+      return makeResponse(
+        true,
+        "success",
+        `Equipped ${spec.name}`,
+        `Ballistic protection increased to +${spec.defense} Defense.`
+      );
+    }
+  });
+}
+
+export async function buyFactoryBulletsAction(quantity: number): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanQty = Math.max(10, Math.min(500, Math.floor(Number(quantity) || 50)));
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    const factory = await tx.cityMonopoly.findUnique({
+      where: {
+        city_propertyType: {
+          city: user.city,
+          propertyType: "BULLET_FACTORY",
+        },
+      },
+    });
+
+    const unitPrice = factory?.bulletPrice ?? 12;
+    const available = factory?.bulletStock ?? 500;
+    if (available < cleanQty) {
+      return makeResponse(
+        false,
+        "warning",
+        "Factory Stock Depleted",
+        `The ${user.city} Bullet Factory only has ${available} rounds in stock.`
+      );
+    }
+
+    const totalCost = cleanQty * unitPrice;
+    const split = computePaymentSplit(user, totalCost);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Funds",
+        `${cleanQty} rounds at $${unitPrice}/round costs $${totalCost.toLocaleString()}.`
+      );
+    }
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+        bullets: { increment: cleanQty },
+      },
+    });
+
+    if (factory) {
+      await tx.cityMonopoly.update({
+        where: { id: factory.id },
+        data: {
+          bulletStock: { decrement: cleanQty },
+          vaultBalance: { increment: Math.round(totalCost * 0.7) },
+        },
+      });
+    }
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Bought ${cleanQty} Rounds from ${user.city} Foundry`,
+      `Paid $${totalCost.toLocaleString()} ($${unitPrice}/bullet).`
+    );
+  });
+}
+
+export async function hireBodyguardsAction(count: number): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanCount = Math.max(1, Math.min(10, Math.floor(Number(count) || 1)));
+  const costPerGuard = 650;
+  const totalCost = cleanCount * costPerGuard;
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    if (user.bodyguards + cleanCount > 15) {
+      return makeResponse(
+        false,
+        "warning",
+        "Max Entourage Reached",
+        "You can field at most 15 personal bodyguards at once."
+      );
+    }
+
+    const split = computePaymentSplit(user, totalCost);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Funds",
+        `Hiring ${cleanCount} syndicate torpedo(es) costs $${totalCost.toLocaleString()}.`
+      );
+    }
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+        bodyguards: { increment: cleanCount },
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Hired +${cleanCount} Bodyguard(s)`,
+      `Your personal protection detail now has ${user.bodyguards + cleanCount} armed torpedoes absorbing incoming hits.`
+    );
+  });
+}
+
+export async function placeBountyAction(
+  targetUsername: string,
+  rewardCash: number,
+  reason: string
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanTarget = String(targetUsername || "").trim();
+  const cleanReward = Math.floor(Number(rewardCash));
+  const cleanReason = String(reason || "").trim() || "Dishonoring the Code of Omerta";
+
+  if (!Number.isFinite(cleanReward) || cleanReward < 500) {
+    return makeResponse(false, "warning", "Minimum Bounty", "Minimum contract bounty is $500.");
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const target = await tx.user.findUnique({ where: { username: cleanTarget } });
+
+    if (!user || !target) {
+      return makeResponse(false, "danger", "Target Not Found", `No mobster named "${cleanTarget}".`);
+    }
+
+    const split = computePaymentSplit(user, cleanReward);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Funds",
+        `Posting a $${cleanReward.toLocaleString()} bounty requires $${cleanReward.toLocaleString()} across Pocket or Personal Bank.`
+      );
+    }
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+      },
+    });
+
+    await tx.bounty.create({
+      data: {
+        targetId: target.id,
+        targetUsername: target.username,
+        posterUsername: user.username,
+        rewardCash: cleanReward,
+        reason: cleanReason,
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        userId: user.id,
+        actorName: user.username,
+        category: "HITLIST",
+        headline: `$${cleanReward.toLocaleString()} Open Contract Placed on ${target.username}!`,
+        details: `Posted by ${user.username}: "${cleanReason}"`,
+        city: user.city,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Bounty Posted on ${target.username}`,
+      `$${cleanReward.toLocaleString()} placed in escrow with the Commission for whoever whacks ${target.username}.`
+    );
+  });
+}
+
+export async function hireDetectiveAction(targetUsername: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanTarget = String(targetUsername || "").trim();
+  const reconFee = 400;
+
+  return prisma.$transaction(async (tx) => {
+    const hunter = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const target = await tx.user.findUnique({
+      where: { username: cleanTarget },
+      include: { family: true },
+    });
+
+    if (!hunter || !target) {
+      return makeResponse(false, "danger", "Unknown Target", `Could not find "${cleanTarget}".`);
+    }
+
+    const split = computePaymentSplit(hunter, reconFee);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Funds",
+        `Private Investigator retainer costs $${reconFee}.`
+      );
+    }
+
+    await tx.user.update({
+      where: { id: hunter.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+      },
+    });
+
+    await tx.detectiveReport.create({
+      data: {
+        hunterId: hunter.id,
+        targetId: target.id,
+        targetUsername: target.username,
+        discoveredCity: target.city,
+        targetHealth: target.health,
+        targetGuards: target.bodyguards,
+        targetFamily: target.family ? `[${target.family.tag}] ${target.family.name}` : null,
+        expiresAt: new Date(Date.now() + 1000 * 60 * 30),
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Dossier Received: ${target.username} Spotted in ${target.city}!`,
+      `Health: ${target.health}% | Bodyguards: ${target.bodyguards} | Family: ${
+        target.family ? `[${target.family.tag}]` : "Independent"
+      }.`
+    );
+  });
+}
+
+export async function executeAssassinationAction(
+  targetUsername: string,
+  bulletsToFire: number
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanTarget = String(targetUsername || "").trim();
+  const cleanBullets = Math.max(5, Math.min(200, Math.floor(Number(bulletsToFire) || 25)));
+
+  return prisma.$transaction(async (tx) => {
+    const attacker = await tx.user.findUnique({
+      where: { id: sessionUser.id },
+      include: { family: true },
+    });
+    const target = await tx.user.findUnique({
+      where: { username: cleanTarget },
+      include: { family: true, vehicles: true },
+    });
+
+    if (!attacker || !target) {
+      return makeResponse(false, "danger", "Target Not Found", `No mobster named "${cleanTarget}".`);
+    }
+
+    if (attacker.id === target.id) {
+      return makeResponse(false, "warning", "Invalid Target", "You cannot put a hit on yourself!");
+    }
+
+    if (attacker.city !== target.city) {
+      return makeResponse(
+        false,
+        "warning",
+        "Target Not in City",
+        `${target.username} is not in ${attacker.city}! Hire a Detective to locate their current city and travel there.`
+      );
+    }
+
+    if (attacker.bullets < cleanBullets) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Bullets",
+        `You only have ${attacker.bullets} rounds (tried to fire ${cleanBullets}).`
+      );
+    }
+
+    // Deduct bullets
+    await tx.user.update({
+      where: { id: attacker.id },
+      data: { bullets: { decrement: cleanBullets } },
+    });
+
+    // Calculate raw attack damage
+    const safehouseSpec = SAFEHOUSE_CATALOG[target.safehouseTier] ?? SAFEHOUSE_CATALOG[0];
+    const mitigation = Math.min(
+      0.65,
+      (target.armorDefense + safehouseSpec.stealthBonusPct) / 150
+    );
+    const rawDamage = Math.round(
+      cleanBullets * (1.2 + attacker.weaponPower / 45) * (1 - mitigation)
+    );
+
+    // Bodyguards absorb 18 damage each first!
+    const guardsKilled = Math.min(target.bodyguards, Math.floor(rawDamage / 18));
+    const damageAfterGuards = Math.max(0, rawDamage - guardsKilled * 18);
+    const newTargetHealth = Math.max(0, target.health - damageAfterGuards);
+
+    // Family Protection & Deterrence: If target belongs to a Family, family enforcers return fire!
+    let retaliationDamage = 0;
+    if (target.family && target.familyId !== attacker.familyId) {
+      retaliationDamage = Math.min(attacker.health - 5, Math.floor(8 + Math.random() * 14));
+      if (retaliationDamage > 0) {
+        await tx.user.update({
+          where: { id: attacker.id },
+          data: { health: { decrement: retaliationDamage } },
+        });
+      }
+    }
+
+    if (newTargetHealth > 0) {
+      await tx.user.update({
+        where: { id: target.id },
+        data: {
+          health: newTargetHealth,
+          bodyguards: { decrement: guardsKilled },
+        },
+      });
+
+      await tx.activityLog.create({
+        data: {
+          userId: attacker.id,
+          actorName: attacker.username,
+          category: "HITLIST",
+          headline: `Drive-By Ambush! ${attacker.username} Opened Fire on ${target.username} in ${attacker.city}`,
+          details: `Fired ${cleanBullets} rounds with ${attacker.equippedWeapon} (${guardsKilled} bodyguards downed, ${target.username} reduced to ${newTargetHealth}% HP).`,
+          city: attacker.city,
+        },
+      });
+
+      revalidatePath("/");
+      return makeResponse(
+        true,
+        "warning",
+        `Target Survived at ${newTargetHealth}% HP!`,
+        `Your ${cleanBullets}-round volley took out ${guardsKilled} bodyguard(s) and dealt ${damageAfterGuards} HP damage.${
+          retaliationDamage > 0
+            ? ` [${target.family?.tag}] family guards returned fire for -${retaliationDamage} HP!`
+            : ""
+        }`
+      );
+    }
+
+    // TARGET WHACKED (newTargetHealth === 0)!
+    // 1. Collect all open Bounties on target
+    const openBounties = await tx.bounty.findMany({
+      where: { targetId: target.id },
+    });
+    const totalBountyReward = openBounties.reduce((acc, b) => acc + b.rewardCash, 0);
+    if (openBounties.length > 0) {
+      await tx.bounty.deleteMany({ where: { targetId: target.id } });
+    }
+
+    // 2. Execute Last Will & Testament (50% estate to designated heir, 35% looted by assassin)
+    const targetTotalEstate = target.cash + target.bankCash;
+    const assassinLoot = Math.round(target.cash * 0.4) + totalBountyReward;
+    let heirNote = "";
+
+    if (target.heirUsername) {
+      const heir = await tx.user.findUnique({ where: { username: target.heirUsername } });
+      if (heir && heir.id !== target.id) {
+        const inheritance = Math.max(250, Math.round(targetTotalEstate * 0.5));
+        await tx.user.update({
+          where: { id: heir.id },
+          data: { bankCash: { increment: inheritance } },
+        });
+        heirNote = ` Last Will executed: $${inheritance.toLocaleString()} bequeathed to heir ${heir.username}.`;
+      }
+    }
+
+    await tx.user.update({
+      where: { id: attacker.id },
+      data: {
+        cash: { increment: assassinLoot },
+        killsCount: { increment: 1 },
+        rankPoints: { increment: 45 },
+      },
+    });
+
+    // Reset target health to 100 so they can keep playing (with death count incremented & pocket cash halved)
+    await tx.user.update({
+      where: { id: target.id },
+      data: {
+        health: 100,
+        bodyguards: 0,
+        cash: Math.round(target.cash * 0.25),
+        deathsCount: { increment: 1 },
+      },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        userId: attacker.id,
+        actorName: attacker.username,
+        category: "OBITUARY",
+        headline: `OBITUARY: ${target.username} Was Whacked in ${attacker.city} by ${attacker.username}!`,
+        details: `Gunned down using a ${attacker.equippedWeapon}. ${
+          totalBountyReward > 0
+            ? `$${totalBountyReward.toLocaleString()} Hitlist Bounty claimed!`
+            : ""
+        }${heirNote} Final testament: "${target.willMessage}"`,
+        city: attacker.city,
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `TARGET WHACKED! ${target.username} Eliminated!`,
+      `You whacked ${target.username} in ${attacker.city}, collected $${assassinLoot.toLocaleString()} (including $${totalBountyReward.toLocaleString()} in bounties) and +45 Rank XP!${heirNote}`
+    );
+  });
+}
+
+/**
+ * STAGE 6.4: LAST WILL & TESTAMENT + ORGANIZED CRIME (OC) MULTI-ROLE CREW HEISTS
+ */
+export async function updateWillAction(
+  heirUsername: string,
+  willMessage: string
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const cleanHeir = String(heirUsername || "").trim() || null;
+  const cleanMsg =
+    String(willMessage || "").trim() ||
+    "Leave my piece to my successor and avenge my name.";
+
+  if (cleanHeir) {
+    const exists = await prisma.user.findUnique({ where: { username: cleanHeir } });
+    if (!exists) {
+      return makeResponse(
+        false,
+        "warning",
+        "Unknown Heir",
+        `No mobster found with handle "${cleanHeir}".`
+      );
+    }
+  }
+
+  await prisma.user.update({
+    where: { id: sessionUser.id },
+    data: {
+      heirUsername: cleanHeir,
+      willMessage: cleanMsg,
+    },
+  });
+
+  revalidatePath("/");
+  return makeResponse(
+    true,
+    "success",
+    "Last Will & Testament Notarized",
+    cleanHeir
+      ? `Should you get whacked, ${cleanHeir} will automatically inherit 50% of your estate.`
+      : "Updated your final testament."
+  );
+}
+
+export async function createOrganizedCrimeAction(templateId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const tpl = OC_HEIST_TEMPLATES.find((t) => t.id === templateId);
+  if (!tpl) return makeResponse(false, "danger", "Invalid Blueprint", "Unknown OC template.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    if (!user) return makeResponse(false, "danger", "Error", "User missing.");
+
+    const split = computePaymentSplit(user, tpl.setupCost);
+    if (!split.canAfford) {
+      return makeResponse(
+        false,
+        "danger",
+        "Insufficient Setup Capital",
+        `Blueprints and bribes for "${tpl.title}" cost $${tpl.setupCost.toLocaleString()}.`
+      );
+    }
+
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        cash: { decrement: split.fromCash },
+        bankCash: { decrement: split.fromBank },
+      },
+    });
+
+    await tx.organizedCrime.create({
+      data: {
+        title: tpl.title,
+        city: user.city,
+        targetPayoutMin: tpl.payoutMin,
+        targetPayoutMax: tpl.payoutMax,
+        leaderName: user.username,
+        status: "RECRUITING",
+      },
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Organized Crime Crew Opened: ${tpl.title}`,
+      `You are the Mastermind. Fill the remaining 3 specialist roles (Weapons, Demolitions, Driver) to launch the heist!`
+    );
+  });
+}
+
+export async function joinOrganizedCrimeRoleAction(
+  ocId: string,
+  role: "weapons" | "demolitions" | "driver",
+  useNpcSpecialist: boolean
+): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  const npcFee = 500;
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const oc = await tx.organizedCrime.findUnique({ where: { id: ocId } });
+
+    if (!user || !oc || oc.status !== "RECRUITING") {
+      return makeResponse(false, "danger", "Unavailable", "This crew heist is no longer open.");
+    }
+
+    let operativeName = user.username;
+    if (useNpcSpecialist) {
+      const split = computePaymentSplit(user, npcFee);
+      if (!split.canAfford) {
+        return makeResponse(
+          false,
+          "danger",
+          "Insufficient Funds",
+          `Hiring an NPC specialist costs $${npcFee}.`
+        );
+      }
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          cash: { decrement: split.fromCash },
+          bankCash: { decrement: split.fromBank },
+        },
+      });
+      const npcNames = {
+        weapons: "Tommy_Two_Guns (NPC)",
+        demolitions: "Nitro_Nick_Bari (NPC)",
+        driver: "Wheelman_Enzo (NPC)",
+      };
+      operativeName = npcNames[role];
+    }
+
+    const updateData =
+      role === "weapons"
+        ? { weaponsName: operativeName }
+        : role === "demolitions"
+          ? { demolitionsName: operativeName }
+          : { driverName: operativeName };
+
+    await tx.organizedCrime.update({
+      where: { id: oc.id },
+      data: updateData,
+    });
+
+    revalidatePath("/");
+    return makeResponse(
+      true,
+      "success",
+      `Assigned ${operativeName} as ${role.toUpperCase()}`,
+      `Crew slot locked in for "${oc.title}".`
+    );
+  });
+}
+
+export async function executeOrganizedCrimeAction(ocId: string): Promise<ActionResponse> {
+  const sessionUser = await getCurrentUser();
+  if (!sessionUser) return makeResponse(false, "danger", "Unauthorized", "Log in first.");
+
+  return prisma.$transaction(async (tx) => {
+    const user = await tx.user.findUnique({ where: { id: sessionUser.id } });
+    const oc = await tx.organizedCrime.findUnique({ where: { id: ocId } });
+
+    if (!user || !oc || oc.status !== "RECRUITING") {
+      return makeResponse(false, "danger", "Not Ready", "Heist already completed or missing.");
+    }
+
+    if (!oc.weaponsName || !oc.demolitionsName || !oc.driverName) {
+      return makeResponse(
+        false,
+        "warning",
+        "Crew Incomplete",
+        "All 4 specialist roles (Mastermind, Weapons, Demolitions, Driver) must be filled before launching!"
+      );
+    }
+
+    const roll = Math.random() * 100;
+    const succeeded = roll <= 78;
+
+    await tx.organizedCrime.update({
+      where: { id: oc.id },
+      data: { status: "COMPLETED" },
+    });
+
+    if (succeeded) {
+      const totalTake =
+        Math.floor(Math.random() * (oc.targetPayoutMax - oc.targetPayoutMin + 1)) +
+        oc.targetPayoutMin;
+      const leaderShare = Math.round(totalTake * 0.45);
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          cash: { increment: leaderShare },
+          rankPoints: { increment: 55 },
+          crimesCommitted: { increment: 1 },
+        },
+      });
+
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "HEIST_RECORD",
+          headline: `HEIST RECORD: ${oc.leaderName}'s 4-Man Crew Pulled Off "${oc.title}" ($${totalTake.toLocaleString()})!`,
+          details: `Mastermind: ${oc.leaderName} | Weapons: ${oc.weaponsName} | Demo: ${oc.demolitionsName} | Driver: ${oc.driverName}.`,
+          city: oc.city,
+        },
+      });
+
+      revalidatePath("/");
+      return makeResponse(
+        true,
+        "success",
+        `ORGANIZED CRIME SCORE: $${totalTake.toLocaleString()}!`,
+        `Your 4-man crew cracked "${oc.title}"! Your cut: $${leaderShare.toLocaleString()} cash + 55 Rank XP!`
+      );
+    } else {
+      const jailUntil = new Date(Date.now() + 50 * 1000);
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          jailUntil,
+          jailReason: `Collared during Organized Crime heist "${oc.title}"`,
+        },
+      });
+
+      await tx.activityLog.create({
+        data: {
+          userId: user.id,
+          actorName: user.username,
+          category: "HEIST_RECORD",
+          headline: `Feds Foiled "${oc.title}" Crew in ${oc.city}!`,
+          details: `Sirens ambushed the getaway convoy — ${user.username} thrown into lockup for 50s.`,
+          city: oc.city,
+        },
+      });
+
+      revalidatePath("/");
+      return makeResponse(
+        false,
+        "danger",
+        "CREW TIMING FAILED — EVERYBODY PINCHED!",
+        `The getaway car stalled at the cordon during "${oc.title}"! You've been thrown in jail for 50s.`
+      );
+    }
+  });
+}
+
 
 

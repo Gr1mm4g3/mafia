@@ -268,3 +268,289 @@ export const DEFAULT_CRIMES = [
   },
 ];
 
+// STAGE 6: FRONT BUSINESSES (Passive Income & Money Laundering)
+export interface FrontBusinessSpec {
+  businessType: string;
+  name: string;
+  description: string;
+  baseCost: number;
+  baseHourlyYield: number;
+  launderBonusPct: number;
+}
+
+export const FRONT_BUSINESS_CATALOG: FrontBusinessSpec[] = [
+  {
+    businessType: "LAUNDROMAT",
+    name: "24-Hour Steam Laundromat",
+    description: "Washes dirty street bills alongside neighborhood linen.",
+    baseCost: 1200,
+    baseHourlyYield: 320,
+    launderBonusPct: 1,
+  },
+  {
+    businessType: "SPEAKEASY",
+    name: "Velvet Curtain Speakeasy & Jazz Club",
+    description: "Backroom gin mill that funnels nightly cash straight into your Family Vault.",
+    baseCost: 3400,
+    baseHourlyYield: 950,
+    launderBonusPct: 1,
+  },
+  {
+    businessType: "AUTO_SHOP",
+    name: "Red Hook Body & Chassis Works",
+    description: "Re-stamps VIN plates and generates steady mechanical revenue.",
+    baseCost: 7500,
+    baseHourlyYield: 2200,
+    launderBonusPct: 2,
+  },
+  {
+    businessType: "IMPORT_DOCK",
+    name: "Bonded Pier Import/Export Terminal",
+    description: "Controls stevedore manifests and cleans high-volume syndicate capital.",
+    baseCost: 16000,
+    baseHourlyYield: 5200,
+    launderBonusPct: 3,
+  },
+];
+
+// STAGE 6: REAL ESTATE & SAFEHOUSES
+export interface SafehouseSpec {
+  tier: number;
+  name: string;
+  cost: number;
+  boozeBonus: number;
+  narcoticsBonus: number;
+  stealthBonusPct: number;
+  description: string;
+}
+
+export const SAFEHOUSE_CATALOG: SafehouseSpec[] = [
+  {
+    tier: 0,
+    name: "Backroom Cot",
+    cost: 0,
+    boozeBonus: 0,
+    narcoticsBonus: 0,
+    stealthBonusPct: 0,
+    description: "A folding mattress behind an Italian bakery.",
+  },
+  {
+    tier: 1,
+    name: "Cold-Water Tenement Flat",
+    cost: 1500,
+    boozeBonus: 20,
+    narcoticsBonus: 5,
+    stealthBonusPct: 4,
+    description: "Hidden floorboard stash and fire-escape exit.",
+  },
+  {
+    tier: 2,
+    name: "Suburban Brick Safe House",
+    cost: 4800,
+    boozeBonus: 55,
+    narcoticsBonus: 15,
+    stealthBonusPct: 8,
+    description: "Reinforced cellar for extra crates and quiet layovers.",
+  },
+  {
+    tier: 3,
+    name: "Fortified Brownstone Townhouse",
+    cost: 12500,
+    boozeBonus: 120,
+    narcoticsBonus: 35,
+    stealthBonusPct: 12,
+    description: "Steel shutters, secret tunnel to the alley, and private vault.",
+  },
+  {
+    tier: 4,
+    name: "Gated Lakeside Compound",
+    cost: 32000,
+    boozeBonus: 260,
+    narcoticsBonus: 80,
+    stealthBonusPct: 18,
+    description: "Floodlights, guard towers, and boathouse smuggling slip.",
+  },
+  {
+    tier: 5,
+    name: "Don's Palazzo Estate",
+    cost: 75000,
+    boozeBonus: 600,
+    narcoticsBonus: 200,
+    stealthBonusPct: 25,
+    description: "Impenetrable syndicate fortress with underground wine & contraband catacombs.",
+  },
+];
+
+// STAGE 6: GUN SHOP & ARMOR
+export interface WeaponSpec {
+  name: string;
+  power: number;
+  cost: number;
+  description: string;
+}
+
+export const WEAPONS_CATALOG: WeaponSpec[] = [
+  {
+    name: "Snub-Nose .38 Detective Special",
+    power: 15,
+    cost: 850,
+    description: "Concealable revolver for close-quarters street work.",
+  },
+  {
+    name: "Winchester Trench Sawed-Off Shotgun",
+    power: 32,
+    cost: 2600,
+    description: "Devastating scattergun for ambushes and warehouse raids.",
+  },
+  {
+    name: "Thompson M1928 'Chicago Typewriter'",
+    power: 60,
+    cost: 7200,
+    description: "50-round drum submachine gun — the signature voice of the Syndicate.",
+  },
+  {
+    name: "Custom Springfield Scoped Sniper Rifle",
+    power: 95,
+    cost: 16500,
+    description: "Precision long-range rifle for high-profile contract hits.",
+  },
+];
+
+export interface ArmorSpec {
+  name: string;
+  defense: number;
+  cost: number;
+  description: string;
+}
+
+export const ARMOR_CATALOG: ArmorSpec[] = [
+  {
+    name: "Lined Wool Overcoat",
+    defense: 12,
+    cost: 900,
+    description: "Heavy tailored wool with steel-mesh breastplate.",
+  },
+  {
+    name: "Bootlegger Steel-Plate Vest",
+    defense: 30,
+    cost: 3400,
+    description: "Concealed ballistic steel plates under a pinstripe suit.",
+  },
+  {
+    name: "Syndicate Armored Escort Detail",
+    defense: 55,
+    cost: 9800,
+    description: "Bulletproof glass sedan and full Kevlar body plating.",
+  },
+];
+
+// STAGE 6: HORSE RACING DERBY
+export interface DerbyHorse {
+  id: number;
+  name: string;
+  winChance: number; // sums to 100
+  multiplier: number;
+  form: string;
+}
+
+export const DERBY_HORSES: DerbyHorse[] = [
+  { id: 1, name: "Lucky Luciano's Pride", winChance: 38, multiplier: 2.3, form: "1-1-2" },
+  { id: 2, name: "Midnight Bootlegger", winChance: 26, multiplier: 3.4, form: "2-1-3" },
+  { id: 3, name: "Sicilian Thunder", winChance: 18, multiplier: 5.0, form: "3-2-1" },
+  { id: 4, name: "copperhead Express", winChance: 11, multiplier: 8.0, form: "4-3-2" },
+  { id: 5, name: "Dead Man's Hand", winChance: 7, multiplier: 12.5, form: "5-4-1" },
+];
+
+// STAGE 6: ORGANIZED CRIME (OC) MULTI-ROLE HEIST TEMPLATES
+export interface OcTemplate {
+  id: string;
+  title: string;
+  description: string;
+  payoutMin: number;
+  payoutMax: number;
+  setupCost: number;
+}
+
+export const OC_HEIST_TEMPLATES: OcTemplate[] = [
+  {
+    id: "oc-train",
+    title: "Hijack Federal Reserve Armored Train",
+    description:
+      "4-man coordinated strike: Mastermind, Weapons Expert, Demolitions Tech, and Getaway Driver.",
+    payoutMin: 18000,
+    payoutMax: 42000,
+    setupCost: 1500,
+  },
+  {
+    id: "oc-diamond",
+    title: "Tunnel Into Manhattan Diamond Bourse",
+    description:
+      "Thermite through the reinforced vault floor while lookouts jam police radio bands.",
+    payoutMin: 38000,
+    payoutMax: 85000,
+    setupCost: 3200,
+  },
+  {
+    id: "oc-mint",
+    title: "Raid the Treasury Bullion Depository",
+    description:
+      "The ultimate syndicate score — requires all 4 specialists in sync to crack the time-locks.",
+    payoutMin: 75000,
+    payoutMax: 165000,
+    setupCost: 6000,
+  },
+];
+
+// STAGE 6: INITIAL TERRITORY DISTRICTS FOR FAMILY WARS
+export const INITIAL_DISTRICTS = [
+  {
+    city: "New York",
+    name: "Manhattan Waterfront Docks",
+    description: "Controls transatlantic cargo liners and customs stevedores.",
+    tributePerClaim: 2400,
+    defenseStrength: 100,
+    defaultFamilyTag: "CORL",
+  },
+  {
+    city: "Chicago",
+    name: "South Side Union Stockyards",
+    description: "Racketeering hub over meatpacking unions and rail depots.",
+    tributePerClaim: 2100,
+    defenseStrength: 100,
+    defaultFamilyTag: "OUTF",
+  },
+  {
+    city: "Detroit",
+    name: "Riverfront Foundry & Ferry Crossing",
+    description: "Prime Canadian whiskey pipeline across the Detroit River.",
+    tributePerClaim: 1950,
+    defenseStrength: 90,
+    defaultFamilyTag: "OUTF",
+  },
+  {
+    city: "Las Vegas",
+    name: "Fremont High-Roller Strip",
+    description: "Skims neon casino cages and desert resort wire rooms.",
+    tributePerClaim: 2800,
+    defenseStrength: 110,
+    defaultFamilyTag: "CORL",
+  },
+  {
+    city: "Havana",
+    name: "Malecón Sugar & Rum Pier",
+    description: "Export monopoly on Caribbean distilleries and pleasure yachts.",
+    tributePerClaim: 2250,
+    defenseStrength: 95,
+    defaultFamilyTag: "CUBA",
+  },
+  {
+    city: "Palermo",
+    name: "Castellammare Old Port",
+    description: "Ancestral Sicilian stronghold governing Mediterranean contraband.",
+    tributePerClaim: 2650,
+    defenseStrength: 115,
+    defaultFamilyTag: "CUBA",
+  },
+];
+
+
